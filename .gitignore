@@ -1,0 +1,10 @@
+.claude/
+.ignore/
+.vscode/
+data/
+data_k4200/
+layouts/*.gds
+.run.sh
+measure/__pycache__
+measure/instruments/__pycache__
+measure/tests/__pycache__
