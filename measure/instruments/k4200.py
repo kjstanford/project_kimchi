@@ -15,6 +15,13 @@ these changes, following the KXCI manual 4200A-KXCI-907-01E (page numbers in bra
   setup and data read
 - check_settings() refuses an Irange below 100 nA on SMUs that *OPT? lists without a preamp [5-42]
 - the DO status letter of every reading is kept (C/T compliance, V overflow, X oscillation) [3-1]
+- rpm_cmd='pmu' switches the RPMs with :PMU:RPM:CONFIGURE instead of the legacy SS + RP; it is required
+  once :PMU: commands are used, since the two-letter pulse commands (RP) cannot be mixed with them [7-1].
+  PMU outputs switched on through measure.instruments.k4200_pmu are turned off (after :PMU:ABORT if a
+  test is running) by outputs_off(), before the SMUs [7-4, 7-16]
+- while a PMU test runs, KXCI refuses every other command, :ERROR:LAST:GET included, with -980 and sends
+  no reply to a refused query (seen live 2026-10-15: a 60 s timeout). So :ERROR:LAST:GET is never sent
+  while pmu_running is set, and it is always read with a 5 s timeout. The no-error reply is '' on V1.13
 Nothing here touches hardware at import time; connect() must be called explicitly.
 """
 import math
@@ -45,16 +52,29 @@ def rpm_of_smu(smu):
 class K4200:
     """integ_time: 1 = 0.1 PLC, 2 = 1 PLC (Normal), 3 = 10 PLC, or [delay factor, filter factor, PLC] for
     IT4 [5-40]. hold_time_s / delay_time_s: HT / DT [5-12, 5-10]. resolution: RS digits, None = leave.
-    poll_s / sweep_timeout_s: wait for data ready. timeout_ms: VISA I/O timeout."""
+    poll_s / sweep_timeout_s: wait for data ready. timeout_ms: VISA I/O timeout.
+    rpm_cmd: 'RP' (legacy SS + RP, default) or 'pmu' (:PMU:RPM:CONFIGURE) for the RPM path switch."""
 
     def __init__(self, res, rm=None, integ_time=2, hold_time_s=0.0, delay_time_s=0.0, resolution=None,
-                 poll_s=0.2, sweep_timeout_s=900.0, timeout_ms=60000, log=print):
-        self.res, self.rm, self.log = res, rm, log
+                 poll_s=0.2, sweep_timeout_s=900.0, timeout_ms=60000, rpm_cmd='RP', log=print):
+        if rpm_cmd not in ('RP', 'pmu'):
+            raise ValueError(f"rpm_cmd must be 'RP' or 'pmu', not {rpm_cmd!r}")
+        self.res, self.rm, self.log, self.rpm_cmd = res, rm, log, rpm_cmd
         res.timeout = timeout_ms
         self.integ_time, self.hold, self.delay = integ_time, hold_time_s, delay_time_s
         self.resolution, self.poll_s, self.sweep_timeout_s = resolution, poll_s, sweep_timeout_s
+        self._drain()
         self.idn = res.query('*IDN?').strip()
         self.opt = res.query('*OPT?').strip()
+        if 'KEITHLEY' not in self.idn.upper() or not re.match(r'^(HP)?SMU', self.opt.upper()):
+            # a reply left over from an earlier session shifted the answers (seen live 2026-10-15:
+            # *IDN? -> '', *OPT? -> 'KSMU1,...'); drain and ask once more
+            log(f"4200A: WARNING unexpected *IDN? {self.idn!r} / *OPT? {self.opt!r}; draining and asking again")
+            self._drain()
+            self.idn = res.query('*IDN?').strip()
+            self.opt = res.query('*OPT?').strip()
+            if 'KEITHLEY' not in self.idn.upper():
+                raise K4200Error(f"4200A answers out of step: *IDN? {self.idn!r}, *OPT? {self.opt!r}")
         log(f"4200A: {self.idn} | *OPT? {self.opt}")
         self.rpms = 'RPM' in self.opt.upper()
         # *OPT? slot entries: SMUn / HPSMUn without, SMUPAn / HPSMUPAn with a preamp [4-4]
@@ -62,12 +82,33 @@ class K4200:
                        for m in re.finditer(r'(HP)?SMU(PA)?(\d+)', self.opt.upper())}
         self.n_smu = max(self.preamp, default=0)
         self.rpm_mode, self.skip, self.channels = {}, set(), None
+        self.pmu_on, self.pmu_running = set(), False      # set by k4200_pmu.PmuRunner
         self.data_ready = False
         self.read_stb()                       # clear any stale bits
         self.clear_error()
         self.no_error = self._no_error_reply()
 
     # --- low level ---
+    def _drain(self, max_reads=5, timeout_ms=300):
+        """Read and discard replies still waiting in the 4200A output buffer (e.g. the late answer to a
+        query that timed out in an earlier session)."""
+        read = getattr(self.res, 'read', None)
+        if read is None:
+            return []
+        old, got = self.res.timeout, []
+        self.res.timeout = timeout_ms
+        try:
+            for _ in range(max_reads):
+                try:
+                    got.append(read())
+                except Exception:
+                    break
+        finally:
+            self.res.timeout = old
+        if got:
+            self.log(f"4200A: discarded {len(got)} stale replies: {got!r}")
+        return got
+
     def read_stb(self):
         """Serial poll. It clears B0, so a data-ready bit seen by any poll (also the syntax check right
         after ME1, if the test is already done) is latched in self.data_ready."""
@@ -75,11 +116,18 @@ class K4200:
         self.data_ready |= bool(stb & STB_DATA_READY)
         return stb
 
-    def last_error(self):
+    def last_error(self, timeout_ms=5000):
+        """The last KXCI error text. Not sent while a PMU test runs (it would be refused without a reply)."""
+        if self.pmu_running:
+            return "(error text not read: :ERROR:LAST:GET is refused while a PMU test runs)"
+        old = self.res.timeout
+        self.res.timeout = min(old, timeout_ms) if old else timeout_ms
         try:
             return self.res.query(':ERROR:LAST:GET').strip()
         except Exception as e:          # keep the original error visible even if this read fails
             return f"(no reply to :ERROR:LAST:GET: {type(e).__name__})"
+        finally:
+            self.res.timeout = old
 
     def clear_error(self):
         """A write, not a query: over GPIB the 4200A sends no reply to it (a query timed out live,
@@ -106,7 +154,14 @@ class K4200:
         """Raise if KXCI logged an error since the last clear (catches -993, which sets no status bit)."""
         if self.no_error is None:
             return
-        err = self.res.query(':ERROR:LAST:GET').strip()
+        if self.pmu_running:
+            raise K4200Error(f"check_errors({context!r}) while a PMU test runs: KXCI would refuse it (-980)")
+        old = self.res.timeout
+        self.res.timeout = min(old, 5000) if old else 5000
+        try:
+            err = self.res.query(':ERROR:LAST:GET').strip()
+        finally:
+            self.res.timeout = old
         if err != self.no_error:
             self.clear_error()
             raise K4200Error(f"KXCI error during {context}: {err}")
@@ -133,12 +188,17 @@ class K4200:
             raise K4200Error(f"KXCI rejected {cmd!r}: {err}")
         return reply
 
-    def set_rpm(self, smus, mode):
-        """mode 2 = SMU, 0 = pulse [7-68]. Only sent when *OPT? lists RPMs and the mode changes."""
+    def set_rpm(self, smus, mode, force=False):
+        """mode 2 = SMU, 0 = pulse (same numbers for RP and :PMU:RPM:CONFIGURE) [7-22, 7-68]. Only sent when
+        *OPT? lists RPMs and the mode changes (force=True: always)."""
         if not self.rpms:
             return
-        todo = [s for s in smus if self.rpm_mode.get(s) != mode]
-        if todo:
+        todo = [s for s in smus if force or self.rpm_mode.get(s) != mode]
+        if todo and self.rpm_cmd == 'pmu':
+            for s in todo:
+                self.write(f":PMU:RPM:CONFIGURE {rpm_of_smu(s)}, {mode}")
+                self.rpm_mode[s] = mode
+        elif todo:
             self.write('SS')
             for s in todo:
                 self.write(f"RP {rpm_of_smu(s)}, {mode}")
@@ -203,12 +263,43 @@ class K4200:
                 self.res.write('ME4')          # abort the test
                 raise K4200Error(f"no data ready after {self.sweep_timeout_s:g} s (stb={stb}); test aborted")
 
+    def pmu_off(self):
+        """Abort a running PMU test, then turn off every PMU output this driver switched on [7-4, 7-16].
+        Every command is sent even if an earlier one failed; problems are logged, never raised, and the
+        error state is cleared afterwards (a stale -980 must not be blamed on the next command)."""
+        cmds = ([':PMU:ABORT'] if self.pmu_running or self.pmu_on else []) + \
+            [f":PMU:OUTPUT:STATE {ch}, 0" for ch in sorted(self.pmu_on)]
+        problems = []
+        for i, c in enumerate(cmds):
+            try:
+                self.res.write(c)
+            except Exception as e:
+                problems.append(f"{c!r}: {type(e).__name__}: {e}")
+            if i == 0:
+                self.pmu_running = False    # after ABORT other commands (and :ERROR:LAST:GET) are valid again
+        self.pmu_running = False
+        self.pmu_on.clear()
+        try:
+            if self.read_stb() & STB_SYNTAX_ERROR:
+                problems.append(f"status byte B1 set: {self.last_error()}")
+            self.clear_error()
+        except Exception as e:
+            problems.append(f"error check: {type(e).__name__}: {e}")
+        if problems:
+            self.log("4200A: WARNING while turning the PMU outputs off: " + ' | '.join(problems))
+        return problems
+
     def outputs_off(self):
-        """User mode, DVn with no parameters disables that SMU output [5-34]; drain/source before gate.
-        Before get_smus() has set the test channels, every SMU listed by *OPT? is turned off."""
-        self.write('US')
-        for ch in self.channels or range(1, self.n_smu + 1):
-            self.write(f"DV{ch}")
+        """PMU outputs first (pmu_off), then user mode, DVn with no parameters disables that SMU output
+        [5-34]; drain/source before gate. Before get_smus() has set the test channels, every SMU listed by
+        *OPT? is turned off."""
+        try:
+            if self.pmu_on or self.pmu_running:
+                self.pmu_off()
+        finally:
+            self.write('US')
+            for ch in self.channels or range(1, self.n_smu + 1):
+                self.write(f"DV{ch}")
 
     def close(self):
         try:

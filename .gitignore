@@ -1,10 +1,13 @@
-.claude/
 .ignore/
 .vscode/
 data/
 data_k4200/
+data_k4200_stress/
 layouts/*.gds
 .run.sh
 measure/__pycache__
 measure/instruments/__pycache__
 measure/tests/__pycache__
+.claude/
+.archived_prompts/
+PROMPT*

@@ -28,7 +28,7 @@ from measure import device_map as dm  # noqa: E402
 from measure import run_map  # noqa: E402
 from measure.instruments.fakes import SafetyViolation  # noqa: E402
 
-DATA = os.path.join('data', '_dryrun_test')
+DATA = os.path.join('.ignore', '_dryrun_test')     # never inside data/ (AGENTS.md)
 CFG = json.load(open('configs/lc500_idvg.json'))
 
 
@@ -506,7 +506,7 @@ def test_k4200_driver_kxci():
     # the real tool (2026-10-15): no preamps, and 'RG n, 1e-09' is rejected with -993 and no status bit
     real_opt = 'SMU1,SMU2,SMU3,SMU4,SMU5,PMU1RPM1-2,PMU2RPM1-2,PMU3RPM1-2,PMU4RPM1-2'
     bench, fake, k, smus = make(opt=real_opt)
-    assert k.preamp == {1: False, 2: False, 3: False, 4: False, 5: False} and k.no_error == 'No error. (0)'
+    assert k.preamp == {1: False, 2: False, 3: False, 4: False, 5: False} and k.no_error == ''
     try:
         K.check_settings(k, smus, {'Irange': 1e-9})
         raise AssertionError('expected K4200Error')
@@ -534,6 +534,327 @@ def test_k4200_driver_kxci():
     print("test_k4200_driver_kxci OK")
 
 
+def _windows_after(n_units, n_windows):
+    """The live L0b/L0c test structure: n_units x 1 ms at 0 V, then n_windows back-to-back 20 us plateaus with
+    10-19 us windows, all at 0 V (was pmu_bringup._windows_after, archived)."""
+    from measure.instruments import k4200_pmu as P
+    z = (0.0, 0.0, 0.0)
+    reads = P.Seq('reads', 'spot', [P.Seg(100, z, z)] + [P.Seg(2000, z, z, meas=True, level=i)
+                                                        for i in range(n_windows)] + [P.Seg(100, z, z)])
+    seqs, entries = {2: reads}, [(2, 1, dict(phase='L0', read='spot'))]
+    if n_units:
+        seqs[1] = P.Seq('unit_1ms', 'unit', P.hold3(0.0, 100_000))
+        entries.insert(0, (1, n_units, dict(phase='L0')))
+    return P.renumber(P.Waveform('L0', seqs, entries, (1, 2, 3), 1000, 1900))
+
+
+def _refused(fn, text):
+    from measure.instruments import k4200_pmu as P
+    try:
+        fn()
+    except P.SarbError as e:
+        assert text in str(e), (text, str(e))
+        return
+    raise AssertionError(f"expected SarbError with {text!r}")
+
+
+def test_sarb_rules_and_rate_model():
+    """k4200_pmu limits: the KXCI rate model gives the rates seen live (L0b/L0c 2026-10-15), and every broken
+    rule is refused before anything could be sent: the KULT bias_stress.c timing on the 1 uA range, the 10 ns
+    grid, > 1 s segments, a non-seamless step, sequence-id gaps, < 3 segments, > 2048 segments, the samples per
+    A/D, the 1-9 s rate trap and KXCI's -951 zone. Commands stay <= 128 values."""
+    import copy
+    import dataclasses
+    from measure import stress_stair as S
+    from measure.instruments import k4200_pmu as P
+    for units, n_win, seen in ((0, 50, 9090909), (5000, 50, 199800), (20000, 50, 9090909),
+                               (1000, 1, 995025), (20000, 1, 200e6)):
+        assert abs(P.kxci_rate(_windows_after(units, n_win)) - seen) < 1, (units, n_win)
+    p = S.params({})
+    wf = S.build_waveform(p, (1, 2, 3))
+    rate = S._settings(p, wf)['rate']
+    assert rate == 100_000_000 and P.validate(wf, 1e-5, rate=rate, min_kxci_spw=4)['kxci_samples_per_window'] > 6
+    _refused(lambda: P.validate(wf, 1e-5, rate=200_000_000), 'samples per A/D')
+    _refused(lambda: P.validate(wf, 1e-6), 'plateau 2e-05 s < 2.04e-05 s')          # 20 us is too short for 1 uA
+    kult = S.build_waveform(dict(p, plateau_s=2e-6, meas_start_s=1e-6, meas_stop_s=1.8e-6, edge_s=100e-9), (1, 2, 3))
+    _refused(lambda: P.validate(kult, 1e-6), 'plateau 2e-06 s < 2.04e-05 s')        # osfet-bias-stress#1 timing
+    _refused(lambda: P.validate(kult, 1e-6), 'transition 1e-07 s < 3.6e-07 s')
+    _refused(lambda: P.ticks(1.234e-8), 'not on the 10 ns grid')
+    stair = next(sid for sid, q in wf.seqs.items() if q.name == 'stair')
+    longseg = copy.deepcopy(wf)
+    longseg.seqs[stair].segs[2] = dataclasses.replace(longseg.seqs[stair].segs[2], n=2 * P.T_MAX_TICKS)
+    _refused(lambda: P.validate(longseg, 1e-5), 'outside 20 ns..1 s')
+    broken = copy.deepcopy(wf)
+    seg = broken.seqs[stair].segs[5]
+    broken.seqs[stair].segs[5] = dataclasses.replace(seg, v1=(seg.v1[0] + 0.01,) + seg.v1[1:])
+    _refused(lambda: P.validate(broken, 1e-5), '!= previous stop')
+    gap = copy.deepcopy(wf)
+    top = max(gap.seqs)
+    gap.seqs[top + 1] = gap.seqs.pop(top)
+    gap.entries = [(top + 1 if sid == top else sid, loops, info) for sid, loops, info in gap.entries]
+    _refused(lambda: P.validate(gap, 1e-5), 'without gaps')
+    assert sorted(P.renumber(gap).seqs) == list(range(1, top + 1)) and P.validate(gap, 1e-5)
+    short = copy.deepcopy(wf)
+    sid = next(sid for sid, q in short.seqs.items() if q.name == 'stdby')
+    short.seqs[sid].segs = short.seqs[sid].segs[:2]
+    _refused(lambda: P.validate(short, 1e-5), 'a sequence needs >= 3')
+    _refused(lambda: S.build_waveform(dict(p, stair_step_v=0.001), (1, 2, 3)), 'earlier than the end of the previous')
+    fine = S.build_waveform(dict(p, stair_step_v=0.001, recovery_times_s=[]), (1, 2, 3))     # 63 ms staircases
+    _refused(lambda: P.validate(fine, 1e-5), 'segments per channel > 2048')
+    _refused(lambda: P.validate(_windows_after(5000, 300), 1e-5, rate=1_000_000, min_kxci_spw=4),
+             'KXCI will lower the rate')                                            # 5 s: ~1.8 samples per window
+    stress_only = S.build_waveform(dict(p, recovery_times_s=[], min_duration_s=0), (1, 2, 3))     # 10.0 s
+    _refused(lambda: P.validate(stress_only, 1e-5, rate=200_000_000), '-951')
+    for c in P.commands(wf, 1e-5, rate=rate):
+        n = len(c.split(',')) - (2 if ':SARB:SEQ:' in c else 1)
+        assert n <= (64 if ':WFM:' in c else 128), c[:60]
+    for bad in ({'vstres': 3.0}, {'stress_times_s': [1.0, 0.5]}, {'recovery_times_s': [0.0]}, {'id_from': 'gate'},
+                {'vstress': 1.5}):
+        try:
+            S.params(bad)
+            raise AssertionError(f"expected ValueError for {bad}")
+        except ValueError:
+            pass
+    print("test_sarb_rules_and_rate_model OK")
+
+
+def test_stress_stair_map():
+    """KULT bias_stress.c scheme on :PMU:SARB: stdby | stair 0 | (stdby | stress | stdby | stair)... | stdby |
+    (0 V hold | recovery stair | stdby)... Every stdby is 10 us with all channels at 0 V, every stress is flat at
+    3 V for exactly the increment of the cumulative time (gate only), every staircase is -1 -> 2 V in 0.1 V at
+    Vd 0.1 V (drain first) with 1 us edges and 20 us plateaus, each recovery staircase starts exactly its
+    recovery time after the end of the stress. One fake device through run_map: dVt follows the fake's hidden
+    PBTI model in stress and recovery; resume skips the device afterwards."""
+    import math
+    import numpy as np
+    import pandas as pd
+    from measure import stress_stair as S
+    from measure.instruments import k4200_pmu as P
+    from measure.instruments.fakes import FakeK4200Visa
+    shutil.rmtree(DATA, ignore_errors=True)
+    cfg = json.load(open('configs/bobafet_6916_stress_stair_k4200.json'))
+    assert (cfg['stress_stair']['vt_id_per_wl'], cfg['stress_stair']['vt_id_min_a']) == (1e-8, 2e-8)   # 60 nA at W6/L1
+    # the fake FET's subthreshold is far steeper than the real IGZO devices: 60 nA falls within one 0.1 V step of
+    # its noise floor, so the model comparison runs at 1e-7 x W/L (the real 19:57 data crosses 60 nA cleanly)
+    cfg['stress_stair'].update(poll_s=0, vt_id_per_wl=1e-7, vt_id_min_a=1e-7)
+    p, wf, b = S.check_config(cfg)
+    st, rt = p['stress_times_s'], p['recovery_times_s']
+    assert st == [1e-3, 5e-3, 1e-2, 5e-2, 0.1, 0.5, 1.0, 5.0, 10.0] and p['vstress'] == 3.0 and p['vd'] == 0.1
+    assert rt == st and b['points'] == 31 * 19 and b['kxci_samples_per_window'] > 6, b
+    phases = [info['phase'] for _, _, info in wf.entries]
+    merged = [ph for i, ph in enumerate(phases) if not i or ph != phases[i - 1] or ph == 'stdby']
+    assert merged == (['stdby', 'read'] + ['stdby', 'stress', 'stdby', 'read'] * len(st) + ['stdby']
+                      + ['rec_hold', 'recovery', 'stdby'] * len(rt)), merged
+    assert 20.0 < wf.duration_s < 20.01 and P.MAX_SAMPLES / wf.duration_s * b['window_s'] < 0.5   # like the 20 s L0
+    zero, flat_3v, edges = (0.0, 0.0, 0.0), {}, {}
+    for sid, loops, info in wf.entries:
+        q = wf.seqs[sid]
+        if info['phase'] in ('stdby', 'rec_hold', 'end_rest'):
+            assert all(s.v0 == s.v1 == zero for s in q.segs), q
+            if info['phase'] == 'stdby':
+                assert q.n == 1000 and loops == 1, q
+        elif info['phase'] == 'stress':
+            k = info['point']
+            assert all(s.v0 == (3.0, 0.0, 0.0) for s in q.segs if s.flat) and all(s.v0[1:] == (0.0, 0.0) for s in q.segs)
+            flat_3v[k] = flat_3v.get(k, 0) + loops * sum(s.n for s in q.segs if s.flat)
+            edges[k] = edges.get(k, []) + [s.n for s in q.segs if not s.flat] * loops
+        else:
+            assert loops == 1 and q.name == 'stair'
+            m = [s for s in q.segs if s.meas]
+            assert [s.v0[0] for s in m] == P.levels(-1.0, 2.0, 0.1) and {s.v0[1] for s in m} == {0.1}
+            assert {s.n for s in m} == {2000} and {s.n for s in q.segs if not s.flat} == {100}
+            on = (0.0, 0.1, 0.0)        # drain first, then the gate; at the end the gate first, then the drain
+            assert [(s.v0, s.v1) for s in q.segs[:2]] == [(zero, on), (on, (-1.0, 0.1, 0.0))], q.segs[:2]
+            assert [(s.v0, s.v1) for s in q.segs[-2:]] == [((2.0, 0.1, 0.0), on), (on, zero)], q.segs[-2:]
+    incr = np.diff([0.0] + st)
+    assert np.allclose([flat_3v[k] * P.TICK for k in sorted(flat_3v)], incr, atol=1e-12), flat_3v   # exact increments
+    assert all(e == [100, 100] for e in edges.values()), edges                                      # 1 us ramps
+    # recovery staircase j starts exactly rt[j] after the end of the last flat 3 V segment
+    et = P.entry_times(wf)
+    last = max(i for i, (_, _, info) in enumerate(wf.entries) if info['phase'] == 'stress')
+    stress_end = et[last][1] - 1e-6
+    starts = [et[i][0] - stress_end for i, (_, _, info) in enumerate(wf.entries) if info['phase'] == 'recovery']
+    assert np.allclose(starts, rt, atol=1e-11), starts
+    tl = P.timeline(wf)
+    first = tl.groupby(['phase', 'point'], sort=False).first()
+    assert np.allclose(first.loc['read', 't_stress_s'].to_numpy(), [0.0] + st, atol=1e-9), first
+    assert np.allclose(first.loc['read', 't_off_s'].iloc[1:], 1e-6 + 10e-6 + 2e-6 + 14.5e-6, atol=1e-9)
+    assert (first.loc['recovery', 't_stress_s'] == st[-1]).all()
+    assert np.allclose(first.loc['recovery', 't_off_s'], np.array(rt) + 2e-6 + 14.5e-6, atol=1e-9)
+    stress_only = S.build_waveform(dict(p, recovery_times_s=[]), (1, 2, 3))         # padded to 11.5 s at the end
+    assert abs(stress_only.duration_s - 11.5) < 1e-9 and phases[:len(stress_only.entries) - 2] == \
+        [i['phase'] for _, _, i in stress_only.entries][:-2]
+    full = dm.load_devices(cfg['device_csv'])
+    rows, bench = run_map.run(cfg, data_dir=DATA, fakes=run_map.make_fake_instruments(cfg, full, 'R23C21L'),
+                              only='R23C21L', origin='R23C21L')
+    x = rows[0]
+    assert x['status'] == 'measured' and x['dvt_file'], x
+    d = pd.read_csv(x['main_file'])
+    assert len(d) == b['points'] and d['Source_Current'].notna().all()
+    vt = pd.read_csv(x['dvt_file'])
+    assert list(vt['phase']) == ['read'] * 10 + ['recovery'] * 9 and np.allclose(vt['t_rec_s'].iloc[10:], rt)
+    A, n, r, tau, _ = FakeK4200Visa(None).stress_model
+    model = [A * t ** n * max(0.0, 1 - r * math.log10(1 + to / tau))
+             for t, to in zip(vt['t_stress_s'][1:], vt['t_off_at_vt_source_s'][1:])]
+    assert max(abs(vt['dVt_source_V'][1:] - model)) < 0.005, (vt['dVt_source_V'].tolist(), model)
+    ref = vt.iloc[0]                   # reference = staircase 0 of this waveform, right before the 1 ms stress
+    assert (ref['phase'], ref['point'], ref['t_stress_s']) == ('read', 0, 0.0)
+    assert ref['dVt_source_V'] == 0 and ref['dVt_drain_V'] == 0 and abs(x['Vt_V'] - ref['Vt_source_V']) < 1e-12
+    assert abs(x['dVt_recovery_end_V'] - vt['dVt_source_V'].iloc[-1]) < 1e-12
+    assert x['dVt_recovery_end_V'] < 0.7 * x['dVt_stress_end_V']          # the fake recovers by about half
+    k = cmds(bench, 'K4200')
+    assert k.count(':PMU:EXECUTE') == 1 and not any(c.startswith('RP ') for c in k)
+    vt2, out = S.reanalyse(x['main_file'], log=lambda m: None)       # saved data, default (smaller) Vt current
+    assert os.path.isfile(out['vt']) and os.path.isfile(out['plot']) and 'reanalysis_Iref6e-8' in out['vt'], out
+    assert list(vt2['phase']) == list(vt['phase']) and vt2['dVt_source_V'].iloc[0] == 0
+    assert (vt2['Vt_source_V'] < vt['Vt_source_V']).all()            # a lower current crosses at a lower Vg
+    plan, _ = run_map.build_plan(cfg, only='R23C21L', origin='R23C21L', data_dir=DATA, log=lambda m: None)
+    assert not plan, plan                                    # resume: never stressed twice
+    print(f"test_stress_stair_map OK ({b['points']} spot means, {b['duration_s']:.4g} s; dVt after 10 s stress "
+          f"{x['dVt_stress_end_V'] * 1e3:.1f} mV, after 10 s recovery {x['dVt_recovery_end_V'] * 1e3:.1f} mV "
+          f"vs model {model[-1] * 1e3:.1f} mV)")
+
+
+def test_stress_stair_ac():
+    """AC stress mode (configs/bobafet_6916_stress_stair_ac_1000s_k4200.json): every stress increment becomes
+    increment / 1 ms pulses of 2 ms period (1 ms flat at 3 V, 1 us edges, the rest at 0 V on every channel), as
+    a looped pulse sequence plus a last pulse without its low, so the cumulative time at 3 V is exactly each
+    stress time and every read follows the last falling edge as in DC. Recovery starts are exact; bad AC
+    settings are refused; one fake device through run_map: dVt follows the fake's hidden model."""
+    import math
+    import numpy as np
+    import pandas as pd
+    from measure import stress_stair as S
+    from measure.instruments import k4200_pmu as P
+    from measure.instruments.fakes import FakeK4200Visa
+    shutil.rmtree(DATA, ignore_errors=True)
+    cfg = json.load(open('configs/bobafet_6916_stress_stair_ac_1000s_k4200.json'))
+    p, wf, b = S.check_config(cfg)
+    st, rt = p['stress_times_s'], p['recovery_times_s']
+    assert (p['stress_mode'], p['ac_period_s'], p['ac_duty'], p['vstress']) == ('ac', 2e-3, 0.5, 3.0)
+    assert (p['stair_start_v'], p['stair_stop_v'], p['vt_id_per_wl'], p['vt_id_min_a']) == (0.0, 2.5, 1e-8, 2e-8)
+    assert st[-1] == 1000.0 and rt == st and b['kxci_samples_per_window'] > 4, b
+    assert S.stress_label(p) == 'AC 3 V, 2 ms period, 50% duty'
+    incr = np.diff([0.0] + st)
+    pulses = S.ac_pulses(p)
+    assert pulses == [round(i / 1e-3) for i in incr] and pulses[:4] == [1, 4, 5, 40], pulses
+    zero, hi3 = (0.0, 0.0, 0.0), (3.0, 0.0, 0.0)
+    shape = [(100, zero, hi3), (100_000, hi3, hi3), (100, hi3, zero)]
+    flat_3v, n_pulses = {}, {}
+    for sid, loops, info in wf.entries:
+        if info['phase'] != 'stress':
+            continue
+        q, k = wf.seqs[sid], info['point']
+        segs = [(s.n, s.v0, s.v1) for s in q.segs]
+        if q.name == 'ac_pulse':
+            assert segs == shape + [(99_800, zero, zero)] and q.n == 200_000, segs     # 2 ms period, 50 %
+        else:
+            assert q.name == 'ac_last' and segs == shape and loops == 1, (q.name, segs)
+        flat_3v[k] = flat_3v.get(k, 0) + loops * sum(s.n for s in q.segs if s.flat and s.v0 == hi3)
+        n_pulses[k] = n_pulses.get(k, 0) + loops
+    assert [n_pulses[k] for k in sorted(n_pulses)] == pulses, n_pulses
+    assert np.allclose([flat_3v[k] * P.TICK for k in sorted(flat_3v)], incr, atol=1e-12), flat_3v   # exact
+    assert [info['phase'] for _, _, info in wf.entries][-3:] == ['rec_hold', 'recovery', 'stdby']
+    wall = sum((n - 1) * 2e-3 + 1e-3 + 2e-6 for n in pulses)
+    assert abs(S.stress_wall_s(wf) - wall) < 1e-9 and 2999 < wf.duration_s < 3001, (S.stress_wall_s(wf), wall)
+    # the reads follow the stress exactly as in the DC waveform; recovery starts exactly rt[j] after the last high
+    dc = S.build_waveform(dict(p, stress_mode='dc'), (1, 2, 3))
+    first = P.timeline(wf).groupby(['phase', 'point'], sort=False).first()
+    first_dc = P.timeline(dc).groupby(['phase', 'point'], sort=False).first()
+    assert np.allclose(first.loc['read', 't_stress_s'].to_numpy(), [0.0] + st, atol=1e-9)
+    assert np.allclose(first['t_off_s'].iloc[1:], first_dc['t_off_s'].iloc[1:], atol=1e-12)
+    et = P.entry_times(wf)
+    last = max(i for i, (_, _, info) in enumerate(wf.entries) if info['phase'] == 'stress')
+    starts = [et[i][0] - (et[last][1] - 1e-6) for i, (_, _, info) in enumerate(wf.entries)
+              if info['phase'] == 'recovery']
+    assert np.allclose(starts, rt, atol=1e-9), starts
+    for bad, text in (({'ac_duty': 0.3}, 'whole number'), ({'ac_duty': 0.0}, 'between 0 and 1'),
+                      ({'ac_duty': 1.0}, 'between 0 and 1'), ({'ac_period_s': 2e-6}, 'no time at 0 V'),
+                      ({'ac_period_s': 4.0}, '<= 1 s'), ({'stress_mode': 'pulsed'}, "'dc' or 'ac'")):
+        try:
+            S.params({'stress_mode': 'ac', **bad})
+            raise AssertionError(f"expected ValueError for {bad}")
+        except ValueError as e:
+            assert text in str(e), (bad, str(e))
+    # 10 us / 20 us variant: 100 pulses for the first 1 ms, same cumulative times, still 3000 s
+    p20, wf20, b20 = S.check_config(json.load(open('configs/bobafet_6916_stress_stair_ac20us_1000s_k4200.json')))
+    assert S.stress_label(p20) == 'AC 3 V, 20 us period, 50% duty' and p20['stress_times_s'] == st
+    assert S.ac_pulses(p20) == [100 * n for n in pulses] and S.ac_ticks(p20) == (1000, 800)
+    pulse20 = next(q for q in wf20.seqs.values() if q.name == 'ac_pulse')
+    assert [(s.n, s.v0, s.v1) for s in pulse20.segs] == [(100, zero, hi3), (1000, hi3, hi3), (100, hi3, zero),
+                                                          (800, zero, zero)]
+    wall20 = sum((n - 1) * 20e-6 + 10e-6 + 2e-6 for n in S.ac_pulses(p20))
+    assert abs(S.stress_wall_s(wf20) - wall20) < 1e-9 and b20['kxci_samples_per_window'] > 4
+    os.makedirs(DATA, exist_ok=True)
+    S.plot_waveform(wf, os.path.join(DATA, 'ac_waveform.png'))            # pulse trains drawn as a band
+    S.plot_waveform(wf20, os.path.join(DATA, 'ac20_waveform.png'))
+    cfg['stress_stair'].update(poll_s=0, vt_id_per_wl=1e-7, vt_id_min_a=1e-7)      # fake: see test_stress_stair_map
+    full = dm.load_devices(cfg['device_csv'])
+    rows, bench = run_map.run(cfg, data_dir=DATA, fakes=run_map.make_fake_instruments(cfg, full, 'R23C21L'),
+                              only='R23C21L', origin='R23C21L')
+    x = rows[0]
+    assert x['status'] == 'measured' and x['dvt_file'], x
+    vt = pd.read_csv(x['dvt_file'])
+    assert list(vt['phase']) == ['read'] * 14 + ['recovery'] * 13 and vt['dVt_source_V'].iloc[0] == 0
+    A, n, r, tau, _ = FakeK4200Visa(None).stress_model
+    model = [A * t ** n * max(0.0, 1 - r * math.log10(1 + to / tau))
+             for t, to in zip(vt['t_stress_s'][1:], vt['t_off_at_vt_source_s'][1:])]
+    assert max(abs(vt['dVt_source_V'][1:] - model)) < 0.005, (vt['dVt_source_V'].tolist(), model)
+    plan, _ = run_map.build_plan(cfg, only='R23C21L', origin='R23C21L', data_dir=DATA, log=lambda m: None)
+    assert not plan, plan
+    print(f"test_stress_stair_ac OK ({sum(pulses)} pulses, {S.stress_wall_s(wf):.4g} s of pulsing, "
+          f"{wf.duration_s:.4g} s; dVt after 1000 s at 3 V {x['dVt_stress_end_V'] * 1e3:.1f} mV, model "
+          f"{model[12] * 1e3:.1f} mV)")
+
+
+def test_k4200_rpm_cmd_pmu():
+    """rpm_cmd='pmu' switches the RPMs with :PMU:RPM:CONFIGURE; the fake refuses RP after :PMU:; the PMU runner
+    refuses to start with the legacy RP setting."""
+    from measure.instruments import k4200 as K
+    from measure.instruments import k4200_pmu as P
+    from measure.instruments.fakes import Bench, FakeK4200Visa
+    from measure import fet_idvg_k4200 as F
+    opt = 'SMU1,SMU2,SMU3,SMU4,SMU5,PMU1RPM1-2,PMU2RPM1-2'
+    bench = Bench(); bench.in_contact = True
+    k = K.K4200(FakeK4200Visa(bench, opt=opt), log=lambda *a: None, poll_s=0, rpm_cmd='pmu')
+    smus = K.get_smus(k, {'gate': 'smu1', 'drain': 'smu2', 'source': 'smu3'})
+    F.IdVg_single_Vd(k, *smus, -1, 2, 0.5, 0.05, 1e-7, None, 0.005)
+    k.close()
+    rpm = [c for c in cmds(bench, 'K4200') if 'RPM' in c or c.startswith('RP ')]
+    assert rpm == [f':PMU:RPM:CONFIGURE {n}, {m}' for m in (2, 0) for n in ('PMU1-1', 'PMU1-2', 'PMU2-1')], rpm
+    bench = Bench(); bench.in_contact = True
+    k = K.K4200(FakeK4200Visa(bench, opt=opt), log=lambda *a: None, poll_s=0)
+    k.write(':PMU:INIT 1')
+    try:
+        k.set_rpm(smus, 2)
+        raise AssertionError('expected K4200Error')
+    except K.K4200Error as e:
+        assert 'RP cannot be used' in str(e), e
+    try:
+        P.PmuRunner(k, smus).run(None, 1e-5)
+        raise AssertionError('expected K4200Error')
+    except K.K4200Error as e:
+        assert "rpm_cmd = 'pmu'" in str(e), e
+    print("test_k4200_rpm_cmd_pmu OK")
+
+
+def test_k4200_stale_reply_and_status():
+    """A reply left in the output buffer by an earlier session is drained before *IDN? (live 2026-10-15:
+    *IDN? came back '' and *OPT? 'KSMU1,...'); PMU status digit F flags an overflow."""
+    from measure.instruments import k4200 as K
+    from measure.instruments import k4200_pmu as P
+    from measure.instruments.fakes import Bench, FakeK4200Visa
+    msgs = []
+    bench = Bench(); bench.in_contact = True
+    fake = FakeK4200Visa(bench, opt='SMU1,SMU2,SMU3,SMU4,SMU5,PMU1RPM1-2,PMU2RPM1-2')
+    fake.pending = ['']
+    k = K.K4200(fake, log=msgs.append, poll_s=0, rpm_cmd='pmu')
+    assert k.idn.startswith('KEITHLEY') and k.opt.startswith('SMU1') and any('stale' in m for m in msgs), msgs
+    assert not P.status_overflow('01010021') and P.status_overflow('01010421') and not P.status_overflow('')
+    assert not bench.bias_live
+    print("test_k4200_stale_reply_and_status OK")
+
+
 def test_live_needs_confirmation(monkey_input='no'):
     cfg = fresh()
     import builtins
@@ -554,7 +875,9 @@ if __name__ == '__main__':
              test_dead_device_screened, test_limits_and_origin, test_chuck_drift_guard,
              test_fmt21_parse, test_fault_devices_and_compliance, test_igzo_v6_device_id_map,
              test_drift_correction, test_long_move_hops_keep_order, test_max_id_scales_with_WL,
-             test_k4200_map, test_k4200_driver_kxci, test_live_needs_confirmation]
+             test_k4200_map, test_k4200_driver_kxci, test_k4200_rpm_cmd_pmu, test_sarb_rules_and_rate_model,
+             test_stress_stair_map, test_stress_stair_ac, test_k4200_stale_reply_and_status,
+             test_live_needs_confirmation]
     cfg = None
     for t in tests:
         with contextlib.redirect_stdout(quiet):

@@ -10,6 +10,12 @@ default A:2, overridable with --origin). All moves are relative to that device.
 
 The SMU tool is config instruments.smu_tool: 'b1500' (default, Keysight B1500A) or
 'k4200' (Keithley 4200A-SCS over KXCI; timing options in the config's 'k4200' block).
+
+Config 'experiment': 'idvg' (default, the adaptive Id-Vg) or 'stress_stair' (4200A PMU measure-stress-
+measure with staircase reads and 0 V recovery, the scheme of the KULT bias_stress.c, measure.stress_stair,
+settings in the 'stress_stair' block; resume treats a device with a PMU_stair file as done, so a device is
+never stressed twice). The earlier 'bias_stress' and 'pmu_diag' experiments are archived with their data in
+.ignore/k4200_stress_archive_20261016/.
 """
 import argparse
 import csv
@@ -32,7 +38,10 @@ SMU_TOOLS = {'b1500': (b1500_mod, fet_idvg), 'k4200': (k4200_mod, fet_idvg_k4200
 
 SUMMARY_FIELDS = ['time', 'sample', 'die_idx', 'key', 'Lc_nm', 'col', 'W_um', 'L_um', 'x_um', 'y_um', 'status', 'reason',
                   'Vt_V',
-                  'on_off', 'gate_start_V', 'flags', 'scan_file', 'main_file']
+                  'on_off', 'gate_start_V', 'flags', 'scan_file', 'main_file',
+                  'dVt_stress_end_V', 'dVt_recovery_end_V', 't_stress_s', 'dvt_file']
+EXPERIMENTS = ('idvg', 'stress_stair')
+PMU_EXPERIMENTS = ('stress_stair',)
 
 
 def _has(d, k):
@@ -46,6 +55,15 @@ def smu_tool(cfg):
     if name not in SMU_TOOLS:
         raise ValueError(f"instruments.smu_tool must be one of {sorted(SMU_TOOLS)}, not {name!r}")
     return (name,) + SMU_TOOLS[name]
+
+
+def experiment(cfg):
+    name = cfg.get('experiment', 'idvg')
+    if name not in EXPERIMENTS:
+        raise ValueError(f"experiment must be one of {EXPERIMENTS}, not {name!r}")
+    if name in PMU_EXPERIMENTS and smu_tool(cfg)[0] != 'k4200':
+        raise ValueError(f"experiment {name!r} needs instruments.smu_tool = 'k4200'")
+    return name
 
 
 def device_W(cfg, d):
@@ -89,7 +107,8 @@ def already_measured(cfg, d, data_dir):
     if not os.path.isdir(folder):
         return False
     tail = f"_{descriptor(cfg, d)}.csv"
-    return any(f.startswith('IdVg_initial_scan_') and f.endswith(tail) for f in os.listdir(folder))
+    first = {'stress_stair': 'PMU_stair_'}.get(experiment(cfg), 'IdVg_initial_scan_')
+    return any(f.startswith(first) and f.endswith(tail) for f in os.listdir(folder))
 
 
 def build_plan(cfg, only=None, columns=None, L_values=None, limit=None, origin=None, data_dir=None, log=print,
@@ -149,7 +168,10 @@ def make_fake_instruments(cfg, full, origin_key, dead=(), fail_on_trigger=None, 
         return hit[1], hit[2], fault
 
     if smu_tool(cfg)[0] == 'k4200':
-        fake = FakeK4200Visa(bench, device_lookup=lookup, fail_on_trigger=fail_on_trigger)
+        kw = {}
+        if experiment(cfg) in PMU_EXPERIMENTS:   # the lab's *OPT? (no preamps, RPMs on PMU1/PMU2)
+            kw['opt'] = 'SMU1,SMU2,SMU3,SMU4,SMU5,PMU1RPM1-2,PMU2RPM1-2'
+        fake = FakeK4200Visa(bench, device_lookup=lookup, fail_on_trigger=fail_on_trigger, **kw)
         return bench, res, k4200_mod.K4200(fake, **cfg.get('k4200', {}))
     return bench, res, FakeB1500(bench, device_lookup=lookup, fail_on_trigger=fail_on_trigger)
 
@@ -166,6 +188,13 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
     show = bool(cfg.get('show_plots')) and live
     matplotlib.use('TkAgg' if show else 'Agg', force=True)
     from measure.idvg_pipeline import measure_device
+    exp = experiment(cfg)
+    if exp == 'stress_stair':
+        from measure import stress_stair
+        stress_stair.check_config(cfg)          # raises on a bad setting before any connection or move
+        if not only:
+            raise ValueError("stress_stair stresses every device it visits: give the devices explicitly "
+                             "(--only R04C18R,... / only=...), not the whole map")
 
     run_dir = die_dir(cfg, data_dir)
     stamp = time.strftime('%Y%m%d_%H%M%S')
@@ -173,7 +202,7 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
     origin_key = dm.parse_keys(origin or cfg['origin_device'])[0]
     tool_name, tool, idvg = smu_tool(cfg)
     log(f"Mode: {'LIVE' if live else 'DRY RUN (fake instruments, no GPIB)'} | SMU tool {tool_name} | "
-        f"origin {origin_key}")
+        f"experiment {exp} | origin {origin_key}")
 
     plan, full = build_plan(cfg, only, columns, L_values, limit, origin_key, data_dir, log, keep_order)
     log(f"Planned devices: {len(plan)}")
@@ -188,7 +217,10 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
     bench = rm = None
     if live:
         if interactive and not confirm(
-                f"LIVE RUN on {tool_name}: {len(plan)} devices. Probes must be landed on {origin_key}. "
+                f"LIVE RUN on {tool_name}: {exp}"
+                + (f" ({stress_stair.stress_label(stress_stair.params(cfg.get('stress_stair', {})))} stress)"
+                   if exp == 'stress_stair' else '')
+                + f", {len(plan)} devices. Probes must be landed on {origin_key}. "
                 f"SMUs gate={cfg['smu_map']['gate']} drain={cfg['smu_map']['drain']} "
                 f"source={cfg['smu_map']['source']}. First step "
                 f"({plan[0]['dx']:.1f}, {plan[0]['dy']:.1f}) um."):
@@ -250,9 +282,14 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
                        'Lc_nm': d['lc'] if _has(d, 'lc') else '', 'col': d['col'], 'W_um': W, 'L_um': d['L'],
                        'x_um': d['x'], 'y_um': d['y']}
                 try:
-                    row.update(measure_device(smu_inst, smus, cfg['measurement'], W, float(d['L']),
-                                              device_dir(cfg, d, data_dir), descriptor(cfg, d),
-                                              save=True, show=show, log=log, idvg=idvg))
+                    if exp == 'stress_stair':
+                        row.update(stress_stair.measure_device(smu_inst, smus, cfg, W, float(d['L']),
+                                                               device_dir(cfg, d, data_dir), descriptor(cfg, d),
+                                                               save=True, show=show, log=log))
+                    else:
+                        row.update(measure_device(smu_inst, smus, cfg['measurement'], W, float(d['L']),
+                                                  device_dir(cfg, d, data_dir), descriptor(cfg, d),
+                                                  save=True, show=show, log=log, idvg=idvg))
                 except Exception as e:
                     row.update(status='failed', reason=f"{type(e).__name__}: {e}")
                     rows.append(row); writer.writerow(row); sf.flush()
