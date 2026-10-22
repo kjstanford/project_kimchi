@@ -208,15 +208,58 @@ class K4200:
     def list_sweep(self, gate, drain, source, vg_list, vd, comp, irange):
         """VAR1 voltage list on the gate, constant Vd on the drain, 0 V on the source. Returns
         {name: [(status_letter, value), ...]} for VG, IG, ID, ISRC."""
-        if not 0 < len(vg_list) <= 4096:
-            raise ValueError(f"list sweep needs 1..4096 points, got {len(vg_list)}")
-        chans = (gate, drain, source)
+        return self.smu_sweep(gate, vg_list, {drain: vd, source: 0},
+                              {gate: ('VG', 'IG'), drain: ('VD', 'ID'), source: ('VSRC', 'ISRC')},
+                              comp, irange, listed=('VG', 'IG', 'ID', 'ISRC'))
+
+    def smu_sweep(self, var1, v_list, consts, names, comp, irange, listed=None):
+        """VAR1 voltage list on SMU var1, constant voltages {smu: V} on the others (any number), one
+        compliance and lowest autorange (RG) for all. names = {smu: (Vname, Iname)} (<= 6 characters, no
+        trailing T/S: DO reads those as timestamp/status [5-38]). listed = the names measured and read back
+        (default: every V and I name). Returns {name: [(status_letter, value), ...]}."""
+        if not 0 < len(v_list) <= 4096:
+            raise ValueError(f"list sweep needs 1..4096 points, got {len(v_list)}")
+        return self._system_test(var1, v_list, consts, names, comp, irange, listed, self.hold, self.delay,
+                                 standby=True)
+
+    def smu_bias(self, consts, names, hold_s, comp, irange, listed=None):
+        """Constant bias {smu: V} on every channel for hold_s (HT, 0..655.3 s), then one reading per name
+        (sampling test: NR 1, IN 0.01, WT 0) [5-12, 5-22..5-24]. Auto standby is OFF (ST n, 0): the outputs
+        STAY ON at these voltages after the test, so the bias carries into the next test (as the reference
+        gc_helpers conditioning stages). The caller must follow with a test that ends in standby, or with
+        outputs_off()."""
+        return self.smu_sample(consts, names, 1, 0.01, comp, irange, hold_s=hold_s, standby=False, listed=listed)
+
+    def smu_sample(self, consts, names, nr, interval_s, comp, irange, hold_s=0.0, standby=True, listed=None):
+        """Sampling test: constant bias {smu: V} on every channel (held hold_s first, HT), then nr readings per
+        name, interval_s apart (NR 1..4096, IN 0.01..10 s, WT 0) [5-12, 5-22..5-24]. standby=False leaves the
+        outputs ON afterwards (see smu_bias). The wait for data ready is stretched to cover the sampling
+        (max(sweep_timeout_s, 1.5 * nr * interval_s + hold_s + 60)); the wall time from ME1 to data ready is
+        kept in self.last_test_s, so callers can check the readings really were interval_s apart."""
+        if not 1 <= int(nr) <= 4096 or int(nr) != nr:
+            raise ValueError(f"NR {nr} outside 1..4096")
+        if not 0.01 <= interval_s <= 10:
+            raise ValueError(f"IN {interval_s} s outside 0.01..10 s")
+        if not 0 <= hold_s <= 655.3:
+            raise ValueError(f"hold time {hold_s} s outside 0..655.3 s")
+        return self._system_test(None, None, consts, names, comp, irange, listed, hold_s, 0.0, standby=standby,
+                                 sm_extra=(f'NR {int(nr)}', f'IN {_num(interval_s)}', 'WT 0'),
+                                 timeout_s=max(self.sweep_timeout_s, 1.5 * nr * interval_s + hold_s + 60))
+
+    def _system_test(self, var1, v_list, consts, names, comp, irange, listed, hold, delay, standby, sm_extra=(),
+                     timeout_s=None):
+        chans = ((var1,) if var1 is not None else ()) + tuple(consts)
+        if len(set(chans)) != len(chans) or set(names) != set(chans):
+            raise ValueError(f"smu test: channels {chans} do not match the names {names}")
+        for n in (n for pair in names.values() for n in pair):
+            if not re.fullmatch(r'[A-Z][A-Z0-9]{0,5}', n) or n[-1] in 'TS':
+                raise ValueError(f"smu test: bad channel name {n!r}")
+        listed = tuple(listed or (n for ch in chans for n in names[ch]))
         self.write('BC')
         self.clear_error()
         self.write('DE')
-        self.write(f"CH{gate}, 'VG', 'IG', 1, 1")
-        self.write(f"CH{drain}, 'VD', 'ID', 1, 3")
-        self.write(f"CH{source}, 'VSRC', 'ISRC', 1, 3")
+        for ch in chans:
+            self.write(f"CH{ch}, '{names[ch][0]}', '{names[ch][1]}', 1, {1 if ch == var1 else 3}")
         for ch in range(1, self.n_smu + 1):
             if ch not in chans:
                 self.write(f"CH{ch}")
@@ -224,13 +267,14 @@ class K4200:
             self.write(cmd, optional=True)
         self.set_rpm(chans, 2)
         self.write('SS')
-        self.write(f"VL{gate}, 1, {_num(comp)}, " + ', '.join(_num(v, 4) for v in vg_list))
-        self.write(f"VC{drain}, {_num(vd)}, {_num(comp)}")
-        self.write(f"VC{source}, 0, {_num(comp)}")
-        self.write(f"HT {_num(self.hold)}")
-        self.write(f"DT {_num(self.delay)}")
+        if var1 is not None:
+            self.write(f"VL{var1}, 1, {_num(comp)}, " + ', '.join(_num(v, 4) for v in v_list))
+        for ch, v in consts.items():
+            self.write(f"VC{ch}, {_num(v)}, {_num(comp)}")
+        self.write(f"HT {_num(hold)}")
+        self.write(f"DT {_num(delay)}")
         for ch in chans:
-            self.write(f"ST {ch}, 1")
+            self.write(f"ST {ch}, {int(standby)}")
         it = self.integ_time
         self.write(f"IT{it}" if isinstance(it, int) else "IT4, " + ', '.join(_num(x) for x in it))
         if self.resolution:
@@ -239,18 +283,23 @@ class K4200:
             self.write(f"RG {ch}, {_num(irange)}")
         self.write('SM')
         self.write('DM2')
-        self.write("LI 'VG', 'IG', 'ID', 'ISRC'")
+        self.write('LI ' + ', '.join(f"'{n}'" for n in listed))
+        for cmd in sm_extra:
+            self.write(cmd)
         self.write('DR1')
         self.write('MD')
         self.check_errors('sweep setup')
         self.data_ready = False
+        t0 = time.time()
         self.write('ME1')
-        self.wait_data_ready()
-        out = {n: parse_do(self.query(f"DO '{n}'")) for n in ('VG', 'IG', 'ID', 'ISRC')}
+        self.wait_data_ready(timeout_s)
+        self.last_test_s = time.time() - t0
+        out = {n: parse_do(self.query(f"DO '{n}'")) for n in listed}
         self.check_errors('test / data read')
         return out
 
-    def wait_data_ready(self):
+    def wait_data_ready(self, timeout_s=None):
+        timeout_s = timeout_s or self.sweep_timeout_s
         t0 = time.time()
         while not self.data_ready:
             time.sleep(self.poll_s)
@@ -259,9 +308,9 @@ class K4200:
                 raise K4200Error(f"KXCI error during test: {self.last_error()}")
             if self.data_ready:
                 return
-            if time.time() - t0 > self.sweep_timeout_s:
+            if time.time() - t0 > timeout_s:
                 self.res.write('ME4')          # abort the test
-                raise K4200Error(f"no data ready after {self.sweep_timeout_s:g} s (stb={stb}); test aborted")
+                raise K4200Error(f"no data ready after {timeout_s:g} s (stb={stb}); test aborted")
 
     def pmu_off(self):
         """Abort a running PMU test, then turn off every PMU output this driver switched on [7-4, 7-16].
@@ -350,6 +399,27 @@ def get_smus(k, mapping):
         raise ValueError(f"smu_map uses an SMU twice: {mapping}")
     k.channels = (chans[1], chans[2], chans[0])   # outputs_off order: drain, source, gate
     return tuple(chans)
+
+
+GC_LINES = ('wwl', 'wbl', 'rbl', 'rwl')
+
+
+def get_gc_smus(k, mapping):
+    """2T gain cell: mapping like {'wwl': 'smu4', 'wbl': 'smu3', 'rbl': 'smu2', 'rwl': 'smu1'} ->
+    {'wwl': 4, 'wbl': 3, 'rbl': 2, 'rwl': 1}. All four go into k.channels, so outputs_off() turns every one
+    off: read lines and WBL first, the write word line last."""
+    if set(mapping) != set(GC_LINES):
+        raise ValueError(f"gain-cell smu_map needs exactly {GC_LINES}, got {sorted(mapping)}")
+    chans = {}
+    for t in GC_LINES:
+        m = re.fullmatch(r'smu(\d)', str(mapping[t]).strip().lower())
+        if not m:
+            raise ValueError(f"smu_map {t}: {mapping[t]!r} is not 'smuN'")
+        chans[t] = int(m.group(1))
+    if len(set(chans.values())) != 4:
+        raise ValueError(f"smu_map uses an SMU twice: {mapping}")
+    k.channels = tuple(chans[t] for t in ('rbl', 'rwl', 'wbl', 'wwl'))
+    return chans
 
 
 def check_settings(k, smus, meas):

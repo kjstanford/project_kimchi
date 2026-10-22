@@ -13,6 +13,9 @@ import random
 import re
 
 
+GC_LINES = ('WWL', 'WBL', 'RWL', 'RBL')
+
+
 class SafetyViolation(AssertionError):
     pass
 
@@ -255,21 +258,23 @@ class FakeK4200Visa:
     SARB_KEYS = {'STARTV': float, 'STOPV': float, 'TIME': float, 'MEAS:TYPE': int, 'MEAS:START': float,
                  'MEAS:STOP': float, 'TRIG': int, 'SSR': int}
     PAGES = {'DE': {'CH', 'VS', 'VM'}, 'SS': {'VL', 'VC', 'HT', 'DT', 'ST', 'RP'},
-             'SM': {'DM', 'LI', 'XN', 'YA', 'YB'}, 'MD': {'ME'}, 'US': {'DV'}}
+             'SM': {'DM', 'LI', 'XN', 'YA', 'YB', 'NR', 'IN', 'WT'}, 'MD': {'ME'}, 'US': {'DV'}}
     MODELESS = {'BC', 'DR', 'IT', 'RS', 'RG'}
 
     def __init__(self, bench, device_lookup=lambda: (10.0, 2.0), fail_on_trigger=None, seed=0,
                  opt='SMUPA1,SMUPA2,SMUPA3,SMU4,,,,', busy_polls=2, pmu_busy_polls=3, pmu_roles=(1, 2, 3),
-                 stress_model=(0.02, 0.3, 0.1, 1e-4, 2.9)):
+                 stress_model=(0.02, 0.3, 0.1, 1e-4, 2.9), pmu_gc=None):
         self.bench, self.device_lookup, self.fail_on_trigger = bench, device_lookup, fail_on_trigger
         self.rng, self.opt, self.busy_polls = random.Random(seed), opt, busy_polls
         self.preamp = {int(m.group(3)): bool(m.group(2)) for m in re.finditer(r'(HP)?SMU(PA)?(\d+)', opt)}
         self.n_smu = max(self.preamp, default=0)
         self.page, self.timeout, self.n_trigger = None, 60000, 0
         self.stb, self.err, self.dr, self.dm, self.li = 0, '', False, None, []
+        self.nr, self.gc_sn = 1, 0.0      # sampling readings; gain-cell storage node (kept across tests)
         self.ch, self.vl, self.vc, self.standby, self.out = {}, {}, {}, set(), {}
         self.buf, self._busy = {}, 0
         self.pmu_busy_polls, self.pmu_roles, self.stress_model = pmu_busy_polls, tuple(pmu_roles), stress_model
+        self.pmu_gc = tuple(pmu_gc) if pmu_gc else None      # (WWL, WBL, RWL, RBL) channels: gain-cell PMU model
         self.rpm_names = set()
         for m in re.finditer(r'PMU(\d)(RPM(1-2|1|2))?', opt):
             if m.group(3):
@@ -397,6 +402,7 @@ class FakeK4200Visa:
                 d.pop(ch, None)
         else:
             self.ch[ch] = (a[1].strip("'"), a[2].strip("'"), int(a[3]), int(a[4]))
+            (self.vc if self.ch[ch][3] == 1 else self.vl).pop(ch, None)   # a redefined channel drops its old source
 
     def _VS(self, a):
         pass
@@ -438,6 +444,20 @@ class FakeK4200Visa:
     def _XN(self, a):
         pass
 
+    def _NR(self, a):
+        n = int(a[0])
+        if not 1 <= n <= 4096:
+            raise ValueError('NR')
+        self.nr = n
+
+    def _IN(self, a):
+        if not 0.01 <= float(a[0]) <= 10:
+            raise ValueError('IN')
+
+    def _WT(self, a):
+        if not 0 <= float(a[0]) <= 100:
+            raise ValueError('WT')
+
     _YA = _YB = _XN
 
     def _DV(self, a):
@@ -459,6 +479,8 @@ class FakeK4200Visa:
         if self.fail_on_trigger and self.n_trigger == self.fail_on_trigger:
             raise OSError("VI_ERROR_TMO: injected 4200A fault")
         gates = [c for c in self.vl if c in self.ch]
+        if {f'I{t}' for t in GC_LINES} <= {c[1] for c in self.ch.values()} and self.dm == 2:
+            return self._gain_cell(gates)
         if len(gates) != 1 or len(self.vc) != 2 or self.dm != 2:
             raise ValueError('test not set up: one VL channel, two VC channels and DM2 expected')
         g = gates[0]
@@ -478,13 +500,46 @@ class FakeK4200Visa:
             cols['ID'].append((sd, Id))
             cols['IS'].append((sd, -(Id + Ig)))
         self.buf = {n: cols[k] for n, k in names.items() if n in self.li}   # only listed names are measured
-        last = {g: vg[-1], d: vd, s: vs}
+        self._end_test({g: vg[-1], d: vd, s: vs})
+
+    def _end_test(self, last):
         for ch in self.ch:
             self.out[ch] = 0.0 if ch in self.standby else last.get(ch, 0.0)
         self._update_bias()
         self._busy = self.busy_polls
         if not self._busy:
             self._done()
+
+    def _gain_cell(self, swept):
+        """2T gain cell, recognised by the line names (IWWL, IWBL, IRWL, IRBL): a list sweep (one VL + three VC)
+        or a sampling test (all VC, NR readings). The write FET passes WBL to the storage node while
+        V_WWL - min(V_WBL, SN) > 1 V, else the node holds (also between tests), leaking 0.1 % per reading toward
+        WBL; the read FET (the site's W/L) sits between RWL and RBL with the node as gate: current in at RWL, out
+        at RBL; WBL/WWL see noise."""
+        by = {c[1][1:]: ch for ch, c in self.ch.items()}          # 'WWL' -> channel
+        if len(swept) > 1 or set(self.vc) | set(swept) != set(by.values()):
+            raise ValueError('gain cell: one VL or none, every line sourced')
+        comp = self.vl[swept[0]][0] if swept else max(c for _, c in self.vc.values())
+        n = len(self.vl[swept[0]][1]) if swept else self.nr
+        level = lambda ch, i: self.vl[ch][1][i] if ch in swept else self.vc[ch][0]
+        dev = self.device_lookup()
+        cols = {ch: ([], []) for ch in by.values()}
+        for i in range(n):
+            v = {t: level(by[t], i) for t in GC_LINES}
+            if v['WWL'] - min(v['WBL'], self.gc_sn) > 1.0:
+                self.gc_sn = v['WBL']
+            else:                                   # write FET off: the node leaks slowly toward WBL
+                self.gc_sn += (v['WBL'] - self.gc_sn) * 1e-3
+            Ir, _, _ = fet_point(self.rng, dev, self.gc_sn - v['RBL'], v['RWL'] - v['RBL'], comp)
+            cur = {'WWL': self.rng.gauss(0, 5e-14), 'WBL': self.rng.gauss(0, 5e-14), 'RWL': Ir, 'RBL': -Ir}
+            for t in GC_LINES:
+                cols[by[t]][0].append(('N', v[t] + self.rng.gauss(0, 1e-5)))
+                cols[by[t]][1].append(('N', cur[t]))
+        buf = {}
+        for ch, (vs, is_) in cols.items():
+            buf[self.ch[ch][0]], buf[self.ch[ch][1]] = vs, is_
+        self.buf = {nm: r for nm, r in buf.items() if nm in self.li}
+        self._end_test({ch: level(ch, n - 1) for ch in by.values()})
 
     # --- :PMU: (Segment Arb) ---
     @staticmethod
@@ -686,7 +741,80 @@ class FakeK4200Visa:
         self.pmu_run = dict(left=self.pmu_busy_polls, total=max(1, self.pmu_busy_polls))
         self._update_bias()
 
+    GC_PMU_TAU_S = 100.0            # storage-node leak toward 0 V while the write FET is off
+
+    def _pmu_simulate_gc(self, chans):
+        """2T gain cell on 4 PMU channels (pmu_gc = WWL, WBL, RWL, RBL channels): every captured segment
+        (MEAS:TYPE 2) is sampled at the capture rate (same <= ~4096-sample rule as below), a spot-mean segment
+        (MEAS:TYPE 1) gives one point stamped at its window start; the storage node follows WBL while
+        V_WWL - min(V_WBL, SN) > 1 V, else leaks toward 0 V with GC_PMU_TAU_S; read current = fet_point(SN,
+        V_RWL - V_RBL), in at RWL, out at RBL; WWL/WBL see noise. Loops of unmeasured sequences are advanced
+        in one step per segment."""
+        pm = self.pmu
+        wwl, wbl, rwl, rbl = self.pmu_gc
+        if not set(self.pmu_gc) <= set(chans):
+            return {ch: [] for ch in chans}
+        dev = self.device_lookup()
+        out = {ch: [] for ch in chans}
+        W0 = pm['seq'][wwl]
+        cap = sum(loops * (me - ms) for sid, loops in pm['wlist'][wwl]
+                  for mt_, ms, me in zip(W0[sid].get('MEAS:TYPE', []), W0[sid].get('MEAS:START', []),
+                                         W0[sid].get('MEAS:STOP', [])) if mt_ == 2)
+        spot = sum(loops * (me - ms) for sid, loops in pm['wlist'][wwl]
+                   for mt_, ms, me in zip(W0[sid].get('MEAS:TYPE', []), W0[sid].get('MEAS:START', []),
+                                          W0[sid].get('MEAS:STOP', [])) if mt_ == 1)
+        n_div = 1
+        while (cap or spot) and 200e6 / n_div > min(pm['rate'], 4096 / (cap or spot)):
+            n_div += 1
+        rate = 200e6 / n_div
+        t = 0.0
+
+        def pt(v, i, ch, tc, n_avg=1):
+            rng_a = pm['mrange'].get(ch, 1e-2)
+            i = max(-1.05 * rng_a, min(1.05 * rng_a, i + self.rng.gauss(0, self.PMU_RANGES[rng_a] / n_avg ** 0.5)))
+            return f"{v:.6g},{i:.6g},{tc:.9g},01020021"
+
+        def step(v, dt=0.0):
+            if v[0] - min(v[1], self.gc_sn) > 1.0:
+                self.gc_sn = v[1]
+            elif dt:
+                self.gc_sn *= math.exp(-dt / self.GC_PMU_TAU_S)
+
+        for sid, loops in pm['wlist'][wwl]:
+            S = [pm['seq'][ch][sid] for ch in self.pmu_gc]
+            T, mt = S[0]['TIME'], S[0].get('MEAS:TYPE', [0] * len(S[0]['TIME']))
+            if not any(mt):                      # unmeasured (e.g. looped 1 ms holds): one step per segment
+                for i, ti in enumerate(T):
+                    step([d['STOPV'][i] for d in S], ti * loops)
+                t += sum(T) * loops
+                continue
+            for _ in range(loops):
+                for i, ti in enumerate(T):
+                    v0 = [d['STARTV'][i] for d in S]
+                    v1 = [d['STOPV'][i] for d in S]
+                    if mt[i] == 2:
+                        ms, me = S[0]['MEAS:START'][i], S[0]['MEAS:STOP'][i]
+                        for j in range(max(1, int(round((me - ms) * rate)))):
+                            tj = ms + j / rate
+                            v = [a + (b - a) * tj / ti for a, b in zip(v0, v1)]
+                            step(v)
+                            Ir, _, _ = fet_point(self.rng, dev, self.gc_sn - v[3], v[2] - v[3], 1.0)
+                            for ch, vv, ii in ((wwl, v[0], 0.0), (wbl, v[1], 0.0), (rwl, v[2], Ir), (rbl, v[3], -Ir)):
+                                out[ch].append(pt(vv, ii, ch, t + tj))
+                    elif mt[i]:
+                        ms, me = S[0]['MEAS:START'][i], S[0]['MEAS:STOP'][i]
+                        step(v0)
+                        Ir, _, _ = fet_point(self.rng, dev, self.gc_sn - v0[3], v0[2] - v0[3], 1.0)
+                        n_avg = max(1, int(round((me - ms) * rate)))
+                        for ch, vv, ii in ((wwl, v0[0], 0.0), (wbl, v0[1], 0.0), (rwl, v0[2], Ir), (rbl, v0[3], -Ir)):
+                            out[ch].append(pt(vv, ii, ch, t + ms, n_avg))
+                    step(v1, ti)
+                    t += ti
+        return out
+
     def _pmu_simulate(self, chans):
+        if self.pmu_gc:
+            return self._pmu_simulate_gc(chans)
         pm, (A, n_exp, r, tau, vth) = self.pmu, self.stress_model
         g, dch, sch = self.pmu_roles
         if not {g, dch, sch} <= set(chans):

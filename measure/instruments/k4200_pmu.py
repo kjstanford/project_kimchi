@@ -3,13 +3,17 @@
 Pages: KXCI manual 4200A-KXCI-907-01E [7-xx]; datasheet 1KW-60780-7 [DS p.xx]; PMU manual
 4200A-PMU-900-01C [PMU p.x-xx]. Background: .claude/skills/k4200a-pmu (references/kxci-pmu.md §4-8).
 
-- A waveform is a set of sequences (each >= 3 segments) and a sequence list [(seq, loops)]. All three
-  channels (gate, drain, source) share the same segment times; each segment carries the start and stop
-  voltage of every channel. Times are kept as integer 10 ns ticks [7-52].
+- A waveform is a set of sequences (each >= 3 segments) and a sequence list [(seq, loops)]. All its
+  channels (gate, drain, source for the FET experiments; any number, e.g. the 4 gain-cell lines) share the
+  same segment times; each segment carries the start and stop voltage of every channel, in wf.chans order.
+  Times are kept as integer 10 ns ticks [7-52]. A measured segment uses the waveform's window
+  (meas_start..meas_stop) unless it carries its own (Seg.win, ticks), e.g. a full-segment capture.
 - validate() checks every documented limit before anything is sent: KXCI segment time 20 ns..1 s [7-52],
   2048 segments / 512 sequences per channel [DS p.28; PMU p.4-11], loops 1..1e12 [7-56], seamless
   start = previous stop also across sequences [7-48], fixed-range RPM timing minimums [DS p.24],
   65,536 points per channel [7-2] and < 1e6 samples per A/D [PMU p.4-10].
+- The current range is one value for every channel or a dict {channel: range} (:PMU:MEASURE:RANGE is per
+  channel); the RPM timing minimums then come from the smallest range used.
 - timeline() is the source of truth for timing: one row per measured window with its stress time and
   delay since the stress was removed (PMU timestamps are only a cross-check).
 - PmuRunner sends the commands through the K4200 driver (status-byte check per command, :ERROR:LAST:GET
@@ -79,6 +83,7 @@ class Seg:
     meas: bool = False
     level: int = -1              # index of the level within a read sequence
     read: str = ''               # read label of a measured segment (else the entry's)
+    win: tuple = None            # own measure window (start, stop) in ticks, else the waveform's
 
     @property
     def t(self):
@@ -279,16 +284,30 @@ def renumber(wf):
 
 
 # --- limits ---
+def seg_window(wf, s):
+    """(start, stop) ticks of a measured segment's window."""
+    return s.win if s.win is not None else (wf.meas_start, wf.meas_stop)
+
+
+def _windows(wf):
+    """(shortest window in s, total measured time in s) over the sequence list."""
+    used = [(wf.seqs[s], loops) for s, loops, _ in wf.entries]
+    span = lambda g: (seg_window(wf, g)[1] - seg_window(wf, g)[0]) * TICK
+    lens = [span(g) for q, _ in used for g in q.segs if g.meas]
+    total = sum(loops * sum(span(g) for g in q.segs if g.meas) for q, loops in used)
+    return (min(lens) if lens else (wf.meas_stop - wf.meas_start) * TICK), total
+
+
 def budgets(wf, rate=None):
     used = {s for s, _, _ in wf.entries}
-    win = (wf.meas_stop - wf.meas_start) * TICK
+    win, measured = _windows(wf)
     points = sum(wf.seqs[s].n_meas * loops for s, loops, _ in wf.entries)
     b = dict(segments=sum(len(q.segs) for q in wf.seqs.values()), sequences=len(wf.seqs), entries=len(wf.entries),
              unused_sequences=sorted(set(wf.seqs) - used), points=points, window_s=win,
-             measured_time_s=points * win, duration_s=wf.duration_s)
+             measured_time_s=measured, duration_s=wf.duration_s)
     if rate:
         k = kxci_rate(wf, rate)
-        b.update(sample_rate=rate, samples=points * win * rate, samples_per_window=win * rate,
+        b.update(sample_rate=rate, samples=measured * rate, samples_per_window=win * rate,
                  kxci_rate=k, kxci_samples_per_window=win * k)
     return b
 
@@ -300,11 +319,11 @@ def kxci_rate(wf, rate=BASE_RATE):
     - samples over the whole duration < 1e6, applied only if that still gives >= 1 sample per window:
       1 s -> 995 kS/s, 5 s -> 199.8 kS/s, 20 s -> not applied.
     The lowest of these, rounded down to 200 MS/s / n."""
-    win = (wf.meas_stop - wf.meas_start) * TICK
+    win, measured = _windows(wf)
     points = sum(wf.seqs[s].n_meas * loops for s, loops, _ in wf.entries)
     target = rate
     if points:
-        target = min(target, KXCI_WINDOW_SAMPLES / (points * win))
+        target = min(target, KXCI_WINDOW_SAMPLES / measured)
         by_duration = MAX_SAMPLES / wf.duration_s
         if by_duration * win >= 1:
             target = min(target, by_duration)
@@ -331,11 +350,26 @@ def choose_rate(wf, max_rate=BASE_RATE, margin=0.95):
                     f"{MAX_SAMPLES} samples with >= 1 sample per window")
 
 
+def channel_ranges(wf, irange):
+    """irange (one value, or {channel: range} covering every waveform channel) -> {channel: range}."""
+    if isinstance(irange, dict):
+        missing = [ch for ch in wf.chans if ch not in irange]
+        if missing:
+            raise SarbError(f"{wf.name}: no current range for channel(s) {missing}")
+        return {ch: float(irange[ch]) for ch in wf.chans}
+    return {ch: float(irange) for ch in wf.chans}
+
+
 def validate(wf, irange, vrange=10.0, rate=None, min_kxci_spw=1.0):
-    """Raise SarbError listing every broken rule; return budgets() on success."""
+    """Raise SarbError listing every broken rule; return budgets() on success. With per-channel ranges the
+    timing minimums are those of the smallest range used."""
     errs = []
-    if irange not in RPM_TIMING:
-        errs.append(f"current range {irange:g} A is not a fixed 4225-RPM range {sorted(RPM_TIMING)}")
+    rngs = channel_ranges(wf, irange)
+    irange = min(rngs.values())
+    bad = sorted({r for r in rngs.values() if r not in RPM_TIMING})
+    if bad:
+        errs.append(f"current range(s) {', '.join(f'{r:g}' for r in bad)} A not fixed 4225-RPM ranges "
+                    f"{sorted(RPM_TIMING)}")
         min_pw = settle = min_win = min_edge = 0.0
     else:
         min_pw, settle, min_win, min_edge = RPM_TIMING[irange]
@@ -348,13 +382,14 @@ def validate(wf, irange, vrange=10.0, rate=None, min_kxci_spw=1.0):
         errs.append(f"{nseg} segments per channel > {MAX_SEGMENTS}")
     if len(wf.entries) > MAX_ENTRIES:
         errs.append(f"{len(wf.entries)} sequence-list entries > {MAX_ENTRIES}")
-    ms, me = wf.meas_start, wf.meas_stop
-    if not 0 <= ms < me:
-        errs.append(f"measure window {ms * TICK:g}..{me * TICK:g} s is empty")
-    if me - ms < min_win / TICK - 1e-9:
-        errs.append(f"measure window {(me - ms) * TICK:g} s < {min_win:g} s minimum for {irange:g} A")
-    if wf.meas_type == 1 and ms < settle / TICK - 1e-9:      # a capture may start at the edge on purpose
-        errs.append(f"measure start {ms * TICK:g} s < settling time {settle:g} s for {irange:g} A")
+    zero = (0.0,) * len(wf.chans)
+    for ms, me in sorted({seg_window(wf, g) for q in wf.seqs.values() for g in q.segs if g.meas}):
+        if not 0 <= ms < me:
+            errs.append(f"measure window {ms * TICK:g}..{me * TICK:g} s is empty")
+        if me - ms < min_win / TICK - 1e-9:
+            errs.append(f"measure window {(me - ms) * TICK:g} s < {min_win:g} s minimum for {irange:g} A")
+        if wf.meas_type == 1 and ms < settle / TICK - 1e-9:      # a capture may start at the edge on purpose
+            errs.append(f"measure start {ms * TICK:g} s < settling time {settle:g} s for {irange:g} A")
     for sid, q in wf.seqs.items():
         if len(q.segs) < 3:
             errs.append(f"{q.name}: {len(q.segs)} segments (a sequence needs >= 3)")
@@ -362,24 +397,27 @@ def validate(wf, irange, vrange=10.0, rate=None, min_kxci_spw=1.0):
             where = f"{q.name} segment {j}"
             if not isinstance(s.n, int) or not T_MIN_TICKS <= s.n <= T_MAX_TICKS:
                 errs.append(f"{where}: {s.n * TICK:g} s outside 20 ns..1 s")
+            if len(s.v0) != len(wf.chans) or len(s.v1) != len(wf.chans):
+                errs.append(f"{where}: {len(s.v0)}/{len(s.v1)} voltages for {len(wf.chans)} channels")
             if any(abs(v) > vrange for v in s.v0 + s.v1):
                 errs.append(f"{where}: |V| > {vrange:g} V")
             if j and q.segs[j - 1].v1 != s.v0:
                 errs.append(f"{where}: start {s.v0} != previous stop {q.segs[j - 1].v1}")
-            if s.meas:
+            if s.meas and wf.meas_type == 1:            # spot mean: a settled plateau
                 if not s.flat:
                     errs.append(f"{where}: measured segment is not flat")
                 if s.n < min_pw / TICK - 1e-9:
                     errs.append(f"{where}: plateau {s.t:g} s < {min_pw:g} s minimum for {irange:g} A")
-                if me > s.n:
-                    errs.append(f"{where}: measure stop {me * TICK:g} s beyond the segment ({s.t:g} s)")
-            elif not s.flat:
+            if s.meas and seg_window(wf, s)[1] > s.n:
+                errs.append(f"{where}: measure stop {seg_window(wf, s)[1] * TICK:g} s beyond the segment "
+                            f"({s.t:g} s)")
+            if not s.flat and not (s.meas and wf.meas_type == 1):
                 dv = max(abs(a - b) for a, b in zip(s.v0, s.v1))
                 if s.n < min_edge / TICK - 1e-9:
                     errs.append(f"{where}: transition {s.t:g} s < {min_edge:g} s minimum for {irange:g} A")
                 if dv / s.t < MIN_SLEW:
                     errs.append(f"{where}: slew {dv / s.t:.3g} V/s below {MIN_SLEW:g} V/s")
-    prev = (0.0, 0.0, 0.0)
+    prev = zero
     for i, (sid, loops, _) in enumerate(wf.entries):
         if sid not in wf.seqs:
             errs.append(f"entry {i}: unknown sequence {sid}")
@@ -392,7 +430,7 @@ def validate(wf, irange, vrange=10.0, rate=None, min_kxci_spw=1.0):
         if loops > 1 and q.segs[-1].v1 != q.segs[0].v0:
             errs.append(f"entry {i} ({q.name}): looped but ends {q.segs[-1].v1} != start {q.segs[0].v0}")
         prev = q.segs[-1].v1
-    if wf.entries and prev != (0.0, 0.0, 0.0):
+    if wf.entries and prev != zero:
         errs.append(f"waveform ends at {prev}, not 0 V")
     b = budgets(wf, rate)
     if b['points'] > MAX_POINTS:
@@ -434,22 +472,22 @@ def _chunked(head, ch, seq, vals):
 
 def commands(wf, irange, vrange=10, load_ohm=1e6, rate=BASE_RATE, offset_comp=False):
     """Everything after :PMU:INIT 1 and the RPM switch, up to (not including) OUTPUT:STATE and EXECUTE."""
-    cmds = []
+    cmds, rngs = [], channel_ranges(wf, irange)
     for ch in wf.chans:
-        cmds += [f":PMU:SOURCE:RANGE {ch}, {vrange:g}", f":PMU:MEASURE:RANGE {ch}, 2, {irange:g}",
+        cmds += [f":PMU:SOURCE:RANGE {ch}, {vrange:g}", f":PMU:MEASURE:RANGE {ch}, 2, {rngs[ch]:g}",
                  f":PMU:LOAD {ch}, {load_ohm:g}"]
     cmds.append(f":PMU:SAMPLE:RATE {int(rate)}")
     if offset_comp:      # type 3 = offset current, addressed by the lowest channel of each card [7-5]
         for c in sorted({2 * ((ch - 1) // 2) + 1 for ch in wf.chans}):
             cmds.append(f":PMU:CONNECTION:COMP {c}, 3, 1")
-    ms, me = _fmt(wf.meas_start * TICK), _fmt(wf.meas_stop * TICK)
     for sid in sorted(wf.seqs):
         segs = wf.seqs[sid].segs
+        ms = [_fmt(seg_window(wf, s)[0] * TICK) if s.meas else '0' for s in segs]
+        me = [_fmt(seg_window(wf, s)[1] * TICK) if s.meas else '0' for s in segs]
         for r, ch in enumerate(wf.chans):
             arrays = (('STARTV', [_fmt(s.v0[r]) for s in segs]), ('STOPV', [_fmt(s.v1[r]) for s in segs]),
                       ('TIME', [_fmt(s.t) for s in segs]), ('MEAS:TYPE', [str(wf.meas_type) if s.meas else '0' for s in segs]),
-                      ('MEAS:START', [ms if s.meas else '0' for s in segs]),
-                      ('MEAS:STOP', [me if s.meas else '0' for s in segs]), ('TRIG', ['1'] * len(segs)))
+                      ('MEAS:START', ms), ('MEAS:STOP', me), ('TRIG', ['1'] * len(segs)))
             for key, vals in arrays:
                 cmds += _chunked(f":PMU:SARB:SEQ:{key}", ch, sid, vals)
     flat = [str(int(x)) for s, loops, _ in wf.entries for x in (s, loops)]
@@ -490,8 +528,10 @@ def merge(tl, data, chans, irange):
         out[f'{cap}_Current'] = [x[1] for x in p]
         out[f'{cap}_Time'] = [x[2] for x in p]
         out[f'{cap}_Status'] = [x[3] for x in p]
+    rng = dict(zip(ROLES, chans))
     for role in ('Drain', 'Source'):
-        out[f'{role}_Overflow'] = (np.abs(out[f'{role}_Current']) >= irange) | \
+        r = irange[rng[role.lower()]] if isinstance(irange, dict) else irange
+        out[f'{role}_Overflow'] = (np.abs(out[f'{role}_Current']) >= r) | \
             out[f'{role}_Status'].map(status_overflow)
     return out
 
@@ -583,8 +623,9 @@ class PmuRunner:
                     self.log(f"saving partial PMU data failed: {type(e).__name__}: {e}")
         k.check_errors(f'PMU run / data read ({wf.name})')
         got = {ch: len(v) for ch, v in self.data.items()}
-        if wf.meas_type == 2:          # waveform capture: samples, an equal number per window
-            if len(set(got.values())) != 1 or not got[wf.chans[0]] or got[wf.chans[0]] % expected:
+        if wf.meas_type == 2:          # waveform capture: samples, the same on every channel
+            uniform = len({seg_window(wf, g) for q in wf.seqs.values() for g in q.segs if g.meas}) == 1
+            if len(set(got.values())) != 1 or not got[wf.chans[0]] or (uniform and got[wf.chans[0]] % expected):
                 raise K4200Error(f"PMU {wf.name}: {got} samples per channel for {expected} capture windows")
         elif any(n != expected for n in got.values()):
             raise K4200Error(f"PMU {wf.name}: expected {expected} points per channel, got {got}")

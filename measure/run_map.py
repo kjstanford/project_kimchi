@@ -16,6 +16,16 @@ measure with staircase reads and 0 V recovery, the scheme of the KULT bias_stres
 settings in the 'stress_stair' block; resume treats a device with a PMU_stair file as done, so a device is
 never stressed twice). The earlier 'bias_stress' and 'pmu_diag' experiments are archived with their data in
 .ignore/k4200_stress_archive_20261016/.
+'gc_wbl' (4200A): 2T gain cell WBL sweep, the read FET transfer curve (measure.gc_sweep, settings in the
+'gc_sweep' block, smu_map with wwl/wbl/rbl/rwl); devices are cells from layouts/igzo_v6_GC_cells.csv.
+'gc_wwl' (4200A): 2T gain cell WWL sweep after conditioning, states 1 and 0 (measure.gc_sweep, 'gc_wwl' block).
+'gc_retention' (4200A): 2T gain cell SMU retention, states 1 and 0 (measure.gc_sweep, 'gc_retention' block).
+'gc_pmu_rw' (4200A PMUs): 2T gain cell alternating write/read transient, Clarius gc_pmu_rw over :PMU:SARB
+(measure.gc_pmu, 'gc_pmu_rw' block; k4200.rpm_cmd must be 'pmu').
+'gc_pmu_ret' (4200A PMUs): 2T gain cell retention, spot-mean reads at a list of times after one write per state,
+Clarius gc_pmu_retention over :PMU:SARB (measure.gc_pmu_ret, 'gc_pmu_ret' block; k4200.rpm_cmd 'pmu').
+'gc_screen_ret' (4200A SMUs + PMUs): per cell in one landing, WBL + WWL sweeps, then the PMU retention only if
+both pass the 'gc_screen' criteria (measure.gc_screen); one summary row per test ('test' column).
 """
 import argparse
 import csv
@@ -29,7 +39,7 @@ import matplotlib
 import numpy as np
 
 from measure import device_map as dm
-from measure import fet_idvg, fet_idvg_k4200
+from measure import fet_idvg, fet_idvg_k4200, gc_pmu, gc_pmu_ret, gc_screen, gc_sweep
 from measure.instruments import b1500 as b1500_mod
 from measure.instruments import k4200 as k4200_mod
 from measure.instruments import prober as prober_mod
@@ -39,9 +49,25 @@ SMU_TOOLS = {'b1500': (b1500_mod, fet_idvg), 'k4200': (k4200_mod, fet_idvg_k4200
 SUMMARY_FIELDS = ['time', 'sample', 'die_idx', 'key', 'Lc_nm', 'col', 'W_um', 'L_um', 'x_um', 'y_um', 'status', 'reason',
                   'Vt_V',
                   'on_off', 'gate_start_V', 'flags', 'scan_file', 'main_file',
-                  'dVt_stress_end_V', 'dVt_recovery_end_V', 't_stress_s', 'dvt_file']
-EXPERIMENTS = ('idvg', 'stress_stair')
+                  'dVt_stress_end_V', 'dVt_recovery_end_V', 't_stress_s', 'dvt_file',
+                  'Vt_bwd_V', 'hyst_V', 'Ileak_max_A', 'Vt_s0_V', 'I0_s1_A', 'I0_s0_A', 'Iend_s1_A', 'Iend_s0_A',
+                  'Iret_s1_start_A', 'Iret_s1_end_A', 'Iret_s0_start_A', 'Iret_s0_end_A', 'ret_ratio_end',
+                  'I_read1_A', 'I_read0_A', 'read_ratio', 'margin_A', 'I_read1_std_A', 'I_read0_std_A', 'Irange_A', 'test',
+                  'I_read1_max_A', 'I_read0_absmax_A', 'Irange_s0_A']
+EXPERIMENTS = ('idvg', 'stress_stair', 'gc_wbl', 'gc_wwl', 'gc_retention', 'gc_pmu_rw', 'gc_pmu_ret', 'gc_screen_ret')
 PMU_EXPERIMENTS = ('stress_stair',)
+GC_EXPERIMENTS = ('gc_wbl', 'gc_wwl', 'gc_retention', 'gc_pmu_rw', 'gc_pmu_ret', 'gc_screen_ret')
+GC_PMU_EXPERIMENTS = ('gc_pmu_rw', 'gc_pmu_ret', 'gc_screen_ret')
+GC_FUNCS = {'gc_wbl': (gc_sweep.check_config, gc_sweep.measure_cell),       # (config check, per-cell measurement)
+            'gc_wwl': (gc_sweep.check_wwl_config, gc_sweep.measure_cell_wwl),
+            'gc_retention': (gc_sweep.check_retention_config, gc_sweep.measure_cell_retention),
+            'gc_pmu_rw': (gc_pmu.check_config, gc_pmu.measure_cell),
+            'gc_pmu_ret': (gc_pmu_ret.check_config, gc_pmu_ret.measure_cell),
+            'gc_screen_ret': (gc_screen.check_config, gc_screen.measure_cell)}
+K4200_ONLY = PMU_EXPERIMENTS + GC_EXPERIMENTS
+FILE_PREFIX = {'stress_stair': 'PMU_stair_', 'gc_wbl': gc_sweep.FILE_PREFIX, 'gc_wwl': gc_sweep.WWL_PREFIX,
+               'gc_retention': gc_sweep.RET_PREFIX, 'gc_pmu_rw': gc_pmu.FILE_PREFIX,
+               'gc_pmu_ret': gc_pmu_ret.FILE_PREFIX, 'gc_screen_ret': gc_screen.FILE_PREFIX}
 
 
 def _has(d, k):
@@ -61,7 +87,7 @@ def experiment(cfg):
     name = cfg.get('experiment', 'idvg')
     if name not in EXPERIMENTS:
         raise ValueError(f"experiment must be one of {EXPERIMENTS}, not {name!r}")
-    if name in PMU_EXPERIMENTS and smu_tool(cfg)[0] != 'k4200':
+    if name in K4200_ONLY and smu_tool(cfg)[0] != 'k4200':
         raise ValueError(f"experiment {name!r} needs instruments.smu_tool = 'k4200'")
     return name
 
@@ -107,7 +133,7 @@ def already_measured(cfg, d, data_dir):
     if not os.path.isdir(folder):
         return False
     tail = f"_{descriptor(cfg, d)}.csv"
-    first = {'stress_stair': 'PMU_stair_'}.get(experiment(cfg), 'IdVg_initial_scan_')
+    first = FILE_PREFIX.get(experiment(cfg), 'IdVg_initial_scan_')
     return any(f.startswith(first) and f.endswith(tail) for f in os.listdir(folder))
 
 
@@ -169,8 +195,12 @@ def make_fake_instruments(cfg, full, origin_key, dead=(), fail_on_trigger=None, 
 
     if smu_tool(cfg)[0] == 'k4200':
         kw = {}
-        if experiment(cfg) in PMU_EXPERIMENTS:   # the lab's *OPT? (no preamps, RPMs on PMU1/PMU2)
+        if experiment(cfg) in K4200_ONLY:   # the lab's *OPT? (no preamps, RPMs on PMU1/PMU2)
             kw['opt'] = 'SMU1,SMU2,SMU3,SMU4,SMU5,PMU1RPM1-2,PMU2RPM1-2'
+        if experiment(cfg) in GC_PMU_EXPERIMENTS:   # gain-cell PMU model on the RPM channels of the smu_map
+            from measure.instruments.k4200_pmu import pmu_channel
+            kw['pmu_gc'] = tuple(pmu_channel(int(str(cfg['smu_map'][t]).lower().replace('smu', '')))
+                                 for t in ('wwl', 'wbl', 'rwl', 'rbl'))
         fake = FakeK4200Visa(bench, device_lookup=lookup, fail_on_trigger=fail_on_trigger, **kw)
         return bench, res, k4200_mod.K4200(fake, **cfg.get('k4200', {}))
     return bench, res, FakeB1500(bench, device_lookup=lookup, fail_on_trigger=fail_on_trigger)
@@ -195,6 +225,8 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
         if not only:
             raise ValueError("stress_stair stresses every device it visits: give the devices explicitly "
                              "(--only R04C18R,... / only=...), not the whole map")
+    if exp in GC_EXPERIMENTS:
+        GC_FUNCS[exp][0](cfg)
 
     run_dir = die_dir(cfg, data_dir)
     stamp = time.strftime('%Y%m%d_%H%M%S')
@@ -221,8 +253,7 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
                 + (f" ({stress_stair.stress_label(stress_stair.params(cfg.get('stress_stair', {})))} stress)"
                    if exp == 'stress_stair' else '')
                 + f", {len(plan)} devices. Probes must be landed on {origin_key}. "
-                f"SMUs gate={cfg['smu_map']['gate']} drain={cfg['smu_map']['drain']} "
-                f"source={cfg['smu_map']['source']}. First step "
+                f"SMUs {' '.join(f'{t}={s}' for t, s in cfg['smu_map'].items())}. First step "
                 f"({plan[0]['dx']:.1f}, {plan[0]['dy']:.1f}) um."):
             log("Aborted by user before connecting."); log.close()
             return [], None
@@ -247,10 +278,16 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
                                     pos_tolerance_rel=m.get('pos_tolerance_rel', 0.0),
                                     max_drift_um=m.get('max_drift_um'), drift_correct_um=m.get('drift_correct_um'),
                                     log=log, **waits)
-    smus = tool.get_smus(smu_inst, cfg['smu_map'])
+    if exp in GC_EXPERIMENTS:
+        smus = tool.get_gc_smus(smu_inst, cfg['smu_map'])
+        p = GC_FUNCS[exp][0](cfg) if exp not in GC_PMU_EXPERIMENTS else {'Irange': 1e-6}   # SMU range check only
+        chk = (list(smus.values()), {'Irange': p['Irange']})
+    else:
+        smus = tool.get_smus(smu_inst, cfg['smu_map'])
+        chk = (smus, cfg.get('measurement'))
     if hasattr(tool, 'check_settings'):
         try:
-            tool.check_settings(smu_inst, smus, cfg['measurement'])
+            tool.check_settings(smu_inst, *chk)
         except Exception as e:
             log(f"Settings rejected before any move: {e}")
             log.close()
@@ -281,8 +318,14 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
                        'die_idx': cfg['sample']['die_idx'], 'key': d['key'],
                        'Lc_nm': d['lc'] if _has(d, 'lc') else '', 'col': d['col'], 'W_um': W, 'L_um': d['L'],
                        'x_um': d['x'], 'y_um': d['y']}
+                parts = [{}]              # one summary row per part (gc_pmu_rw with several ranges: one per range)
                 try:
-                    if exp == 'stress_stair':
+                    if exp in GC_EXPERIMENTS:
+                        fn = GC_FUNCS[exp][1]
+                        out = fn(smu_inst, smus, cfg, device_dir(cfg, d, data_dir), descriptor(cfg, d),
+                                 save=True, show=show, log=log)
+                        parts = out if isinstance(out, list) else [out]
+                    elif exp == 'stress_stair':
                         row.update(stress_stair.measure_device(smu_inst, smus, cfg, W, float(d['L']),
                                                                device_dir(cfg, d, data_dir), descriptor(cfg, d),
                                                                save=True, show=show, log=log))
@@ -296,9 +339,12 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
                     raise
                 finally:
                     tool.zero_outputs(smu_inst)
-                rows.append(row); writer.writerow(row); sf.flush()
-                log(f"{d['key']}: {row['status']} {row.get('reason', '')}"
-                    + (f" | flags: {row['flags']}" if row.get('flags') else ''))
+                for part in parts:
+                    r = {**row, **part}
+                    rows.append(r); writer.writerow(r); sf.flush()
+                    log(f"{d['key']}: {r['status']} {r.get('reason', '')}"
+                        + (f"({r['Irange_A']:g} A range)" if r.get('Irange_A') else '')
+                        + (f" | flags: {r['flags']}" if r.get('flags') else ''))
         except KeyboardInterrupt:
             log("KeyboardInterrupt: stopping run")
         except Exception as e:

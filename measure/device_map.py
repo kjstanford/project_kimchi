@@ -13,7 +13,15 @@ def device_key(col, L):
 
 
 def load_devices(csv_path):
-    df = pd.read_csv(csv_path)
+    """csv_path: one CSV, or a list of CSVs in the same frame and schema (e.g. 3T FETs + gain-cell FETs),
+    concatenated so any of their devices can be the origin."""
+    if isinstance(csv_path, (list, tuple)):
+        dfs = [pd.read_csv(p) for p in csv_path]
+        if len({'device_id' in d.columns for d in dfs}) > 1:
+            raise ValueError(f"{csv_path}: mixed device_id / Column:L schemas")
+        df = pd.concat(dfs, ignore_index=True)
+    else:
+        df = pd.read_csv(csv_path)
     cols = COLS_ID if 'device_id' in df.columns else COLS
     missing = set(cols.values()) - set(df.columns)
     if missing:

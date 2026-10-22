@@ -1,0 +1,72 @@
+{
+  "experiment": "gc_retention",
+  "sample": {
+    "name": "wd_bobafet_6916",
+    "die_idx": "0_0"
+  },
+  "device_csv": [
+    "layouts/igzo_v6_3T_FETs.csv",
+    "layouts/igzo_v6_GC_FETs.csv",
+    "layouts/igzo_v6_GC_cells.csv"
+  ],
+  "data_dir": "data_k4200",
+  "origin_device": "R33C04",
+  "first_row": "right",
+  "repeat_measurement": false,
+  "show_plots": false,
+  "smu_map": {
+    "wwl": "smu4",
+    "wbl": "smu3",
+    "rbl": "smu2",
+    "rwl": "smu1"
+  },
+  "instruments": {
+    "smu_tool": "k4200",
+    "prober_resource": "GPIB0::22::INSTR",
+    "k4200_resource": "GPIB0::18::INSTR"
+  },
+  "k4200": {
+    "timeout_ms": 60000,
+    "integ_time": 2,
+    "hold_time_s": 0.0,
+    "delay_time_s": 0.01,
+    "poll_s": 0.2,
+    "sweep_timeout_s": 900
+  },
+  "motion": {
+    "wait_mode": "sleep",
+    "xy_wait_s": 20,
+    "z_wait_s": 10,
+    "velocity_pct": 10,
+    "pos_tolerance_um": 5.0,
+    "pos_tolerance_rel": 0.03,
+    "max_drift_um": 20.0,
+    "drift_correct_um": 5.0,
+    "max_step_um": 2600,
+    "split_long_moves": true,
+    "bounds_margin_um": 300,
+    "transform": {
+      "rotate_deg": 0,
+      "mirror_x": false,
+      "mirror_y": false
+    }
+  },
+  "gc_retention": {
+    "wwl_high": 2.5,
+    "wwl_low": -0.5,
+    "wbl_high": 1.5,
+    "wbl_low": 0.0,
+    "rwl_high": 1.5,
+    "rwl_low": 0.0,
+    "rbl_V": 0.0,
+    "states": [
+      1,
+      0
+    ],
+    "conditioning_s": 2.0,
+    "retention_s": 1000.0,
+    "interval_s": 1.0,
+    "compliance": 0.1,
+    "Irange": 1e-06
+  }
+}
