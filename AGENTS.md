@@ -11,6 +11,7 @@ These rules apply to every task.
   system/conda Python, global pip/conda caches, system tools, etc.) is done
   by me, not the agent. In those cases, stop and give me step-by-step
   commands to run myself, then continue once I confirm.
+- Never delete / modify anything inside `data`, `data_k4200`, and `data_k4200_stress` unless exclusively prompted by the user. Even in such cases just provide the commands to the user to run themselves outlining the associated modifications / deletions involved.
 
 ## Terminal
 

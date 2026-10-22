@@ -1,0 +1,131 @@
+{
+  "sample": {
+    "name": "wd_bobafet_6916",
+    "die_idx": "0_0"
+  },
+  "experiment": "stress_stair",
+  "device_csv": "layouts/igzo_v6_3T_FETs.csv",
+  "data_dir": "data_k4200_stress",
+  "origin_device": "R23C21L",
+  "first_row": "right",
+  "repeat_measurement": false,
+  "show_plots": false,
+  "smu_map": {
+    "gate": "smu1",
+    "drain": "smu2",
+    "source": "smu3"
+  },
+  "instruments": {
+    "smu_tool": "k4200",
+    "prober_resource": "GPIB0::22::INSTR",
+    "k4200_resource": "GPIB0::18::INSTR"
+  },
+  "k4200": {
+    "timeout_ms": 60000,
+    "integ_time": 2,
+    "hold_time_s": 0.0,
+    "delay_time_s": 0.01,
+    "poll_s": 0.2,
+    "sweep_timeout_s": 900,
+    "rpm_cmd": "pmu"
+  },
+  "motion": {
+    "wait_mode": "sleep",
+    "xy_wait_s": 20,
+    "z_wait_s": 10,
+    "velocity_pct": 10,
+    "pos_tolerance_um": 5.0,
+    "pos_tolerance_rel": 0.03,
+    "max_drift_um": 20.0,
+    "drift_correct_um": 5.0,
+    "max_step_um": 2600,
+    "split_long_moves": true,
+    "bounds_margin_um": 300,
+    "transform": {
+      "rotate_deg": 0,
+      "mirror_x": false,
+      "mirror_y": false
+    }
+  },
+  "measurement": {
+    "Irange": 1e-06,
+    "Vrange": null,
+    "compliance": 0.1,
+    "default_start": -1.0,
+    "default_stop": 2.0,
+    "start_limit": -1.0,
+    "scan_step": 0.025,
+    "main_step": 0.025,
+    "Vd_scan": 0.05,
+    "IdVg_drain_list": [
+      0.05,
+      1.5
+    ],
+    "IdVg_cycles": 1,
+    "screen": {
+      "Vt_Id_per_WL": 1e-07,
+      "Vt_min": -3.5,
+      "Vt_max": 2.5,
+      "Ig_max": 1e-08,
+      "Id_max_min": 1e-07,
+      "Id_max_min_per_WL": 1e-07,
+      "on_off_min": 100,
+      "Voff_Id": 2.5e-12,
+      "short_Id_min": 1e-05,
+      "short_on_off_max": 2.0
+    },
+    "adaptive_start": false
+  },
+  "stress_stair": {
+    "v_range": 10,
+    "i_range": 1e-05,
+    "load_ohm": 1000000.0,
+    "offset_comp": false,
+    "min_samples_per_window": 4,
+    "stair_start_v": 0.0,
+    "stair_stop_v": 2.5,
+    "stair_step_v": 0.1,
+    "vd": 0.1,
+    "edge_s": 1e-06,
+    "plateau_s": 2e-05,
+    "meas_start_s": 1e-05,
+    "meas_stop_s": 1.9e-05,
+    "vstress": 3.0,
+    "stress_times_s": [
+      0.001,
+      0.005,
+      0.01,
+      0.05,
+      0.1,
+      0.5,
+      1.0,
+      5.0,
+      10.0,
+      50.0,
+      100.0,
+      500.0,
+      1000.0
+    ],
+    "stdby_s": 1e-05,
+    "min_duration_s": 11.5,
+    "id_from": "source",
+    "vt_id_per_wl": 1e-08,
+    "vt_id_min_a": 2e-08,
+    "poll_s": 0.5,
+    "recovery_times_s": [
+      0.001,
+      0.005,
+      0.01,
+      0.05,
+      0.1,
+      0.5,
+      1.0,
+      5.0,
+      10.0,
+      50.0,
+      100.0,
+      500.0,
+      1000.0
+    ]
+  }
+}

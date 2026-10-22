@@ -1,0 +1,80 @@
+{
+  "sample": {
+    "name": "wd_bobafet_6916",
+    "die_idx": "0_0"
+  },
+  "device_csv": [
+    "layouts/igzo_v6_3T_FETs.csv",
+    "layouts/igzo_v6_GC_FETs.csv"
+  ],
+  "data_dir": "data_k4200",
+  "origin_device": "R18C25L",
+  "first_row": "right",
+  "repeat_measurement": false,
+  "show_plots": false,
+  "smu_map": {
+    "gate": "smu1",
+    "drain": "smu2",
+    "source": "smu3"
+  },
+  "instruments": {
+    "smu_tool": "k4200",
+    "prober_resource": "GPIB0::22::INSTR",
+    "k4200_resource": "GPIB0::18::INSTR"
+  },
+  "k4200": {
+    "timeout_ms": 60000,
+    "integ_time": 2,
+    "hold_time_s": 0.0,
+    "delay_time_s": 0.01,
+    "poll_s": 0.2,
+    "sweep_timeout_s": 900
+  },
+  "motion": {
+    "wait_mode": "sleep",
+    "xy_wait_s": 20,
+    "z_wait_s": 10,
+    "velocity_pct": 10,
+    "pos_tolerance_um": 5.0,
+    "pos_tolerance_rel": 0.03,
+    "max_drift_um": 20.0,
+    "drift_correct_um": 5.0,
+    "max_step_um": 2600,
+    "split_long_moves": true,
+    "bounds_margin_um": 300,
+    "transform": {
+      "rotate_deg": 0,
+      "mirror_x": false,
+      "mirror_y": false
+    }
+  },
+  "measurement": {
+    "Irange": 1e-06,
+    "Vrange": null,
+    "compliance": 0.1,
+    "default_start": -1.0,
+    "default_stop": 2.0,
+    "start_limit": -1.0,
+    "scan_step": 0.025,
+    "main_step": 0.025,
+    "Vd_scan": 0.05,
+    "scan_only": true,
+    "IdVg_drain_list": [
+      0.05
+    ],
+    "IdVg_cycles": 1,
+    "screen": {
+      "Vt_Id_per_WL": 1e-07,
+      "Vt_min": -3.5,
+      "Vt_max": 2.5,
+      "Ig_max": 1e-08,
+      "Id_max_min": 1e-07,
+      "Id_max_min_per_WL": 1e-07,
+      "on_off_min": 100,
+      "Voff_Id": 2.5e-12,
+      "short_Id_min": 1e-05,
+      "short_on_off_max": 2.0
+    },
+    "adaptive_start": false
+  }
+}

@@ -160,6 +160,8 @@ def measure_device(b1500, smus, cfg, W, L, save_dir, descriptor, save=True, show
            'flags': scan['flags'], 'scan_file': scan['file'], 'main_file': None}
     if scan['skip']:
         log(f"SKIPPING main sweep: {scan['reason']}")
+    elif cfg.get('scan_only', False):
+        log("scan only (measurement.scan_only): no main sweep")
     else:
         log(f"Main sweep {scan['gate_start']} V -> {cfg['default_stop']} V")
         res['main_file'], main_flags = main_sweep(b1500, smus, cfg, scan['gate_start'], save_dir, descriptor,
