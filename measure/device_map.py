@@ -66,14 +66,16 @@ def filter_devices(df, only=None, columns=None, L_values=None):
     return df
 
 
-def serpentine(df, row_tol_um=1.0, first_row='left'):
-    """Bottom row first, starting from the `first_row` side ('left' = A->L, 'right' = L->A);
-    then alternate direction on each row up."""
+def serpentine(df, row_tol_um=1.0, first_row='left', start_row='bottom'):
+    """`start_row` first ('bottom' = lowest layout y, 'top' = highest), starting from the `first_row` side
+    ('left' = A->L, 'right' = L->A); then alternate direction on each following row."""
     if first_row not in ('left', 'right'):
         raise ValueError("first_row must be 'left' or 'right'")
+    if start_row not in ('bottom', 'top'):
+        raise ValueError("start_row must be 'bottom' or 'top'")
     df = df.copy()
     df['row'] = (df['y'] / row_tol_um).round().astype(int)
-    rows = sorted(df['row'].unique())
+    rows = sorted(df['row'].unique(), reverse=start_row == 'top')
     flip = first_row == 'right'
     parts = [df[df['row'] == r].sort_values('x', ascending=((i % 2 == 0) != flip)) for i, r in enumerate(rows)]
     return pd.concat(parts).drop(columns='row').reset_index(drop=True)

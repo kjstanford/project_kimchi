@@ -148,7 +148,7 @@ def build_plan(cfg, only=None, columns=None, L_values=None, limit=None, origin=N
         sel = sel.set_index('key').loc[list(dict.fromkeys(dm.parse_keys(only)))].reset_index()
         sel = sel[[c for c in full.columns if c in sel.columns]]
     else:
-        sel = dm.serpentine(sel, first_row=cfg.get('first_row', 'left'))
+        sel = dm.serpentine(sel, first_row=cfg.get('first_row', 'left'), start_row=cfg.get('start_row', 'bottom'))
     if not cfg.get('repeat_measurement', False):
         done = [k for k, (_, r) in zip(sel['key'], sel.iterrows()) if already_measured(cfg, r, data_dir)]
         if done:
@@ -385,12 +385,16 @@ def main(argv=None):
     ap.add_argument('--repeat', action='store_true', help='remeasure devices that already have data')
     ap.add_argument('--keep-order', action='store_true', help='visit the --only devices in the order given')
     ap.add_argument('--first-row', choices=('left', 'right'),
-                    help="side the bottom row starts from: left = A->L (default), right = L->A")
+                    help="side the first row starts from: left = A->L (default), right = L->A")
+    ap.add_argument('--start-row', choices=('bottom', 'top'),
+                    help="row the serpentine starts on: bottom = lowest layout y (default), top = highest")
     a = ap.parse_args(argv)
     with open(a.config) as f:
         cfg = json.load(f)
     if a.first_row:
         cfg['first_row'] = a.first_row
+    if a.start_row:
+        cfg['start_row'] = a.start_row
     if a.repeat:
         cfg['repeat_measurement'] = True
     run(cfg, live=a.live, only=a.only, columns=a.columns.split(',') if a.columns else None,

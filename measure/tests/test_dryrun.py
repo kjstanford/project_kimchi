@@ -162,6 +162,14 @@ def test_limits_and_origin():
     assert keys[:12] == [f"{c}:2" for c in "LKJIHGFEDCBA"], keys[:12]
     assert keys[12:24] == [f"{c}:1" for c in "ABCDEFGHIJKL"], keys[12:24]
     assert (plan[0]['dx'], plan[0]['dy']) == (0.0, 0.0) and (plan[1]['dx'], plan[1]['dy']) == (-200.0, 0.0)
+    # start on the top row from A:0.04: A->L on L=0.04, then L->A on L=0.06 (one row down)
+    cfg = fresh()
+    cfg['start_row'] = 'top'
+    plan, _ = run_map.build_plan(cfg, origin='A:0.04', L_values=['0.04', '0.06'], data_dir=DATA, log=lambda m: None)
+    keys = [p['key'] for p in plan]
+    cols = "ABCGHIJKL"   # the wTLM layout has no D-F
+    assert keys == [f"{c}:0.04" for c in cols] + [f"{c}:0.06" for c in cols[::-1]], keys
+    assert (plan[0]['dx'], plan[0]['dy']) == (0.0, 0.0) and (plan[9]['dx'], plan[9]['dy']) == (0.0, -200.0)
     print("test_limits_and_origin OK")
 
 
