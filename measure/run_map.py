@@ -138,8 +138,10 @@ def already_measured(cfg, d, data_dir):
 
 
 def build_plan(cfg, only=None, columns=None, L_values=None, limit=None, origin=None, data_dir=None, log=print,
-               keep_order=False):
-    """keep_order=True visits the --only devices in the order given instead of serpentine."""
+               keep_order=False, origin_offset=None):
+    """keep_order=True visits the --only devices in the order given instead of serpentine.
+    origin_offset = layout (x, y) um of the die the probes are on relative to this die; its long first step
+    is split into hops of at most max_step_um."""
     full = dm.load_devices(cfg['device_csv'])
     sel = dm.filter_devices(full, only, columns, L_values)
     if keep_order:
@@ -158,12 +160,14 @@ def build_plan(cfg, only=None, columns=None, L_values=None, limit=None, origin=N
         sel = sel.head(limit)
     m = cfg['motion']
     plan = dm.plan_moves(sel, dm.parse_keys(origin or cfg['origin_device'])[0], m['transform'],
-                         m['max_step_um'], m['bounds_margin_um'], full, split_long=m.get('split_long_moves', False))
+                         m['max_step_um'], m['bounds_margin_um'], full,
+                         split_long=m.get('split_long_moves', False) or bool(origin_offset),
+                         origin_offset=origin_offset or (0.0, 0.0))
     return plan, full
 
 
 def make_fake_instruments(cfg, full, origin_key, dead=(), fail_on_trigger=None, faults=None, land_tol_um=10.0,
-                          prober_kw=None):
+                          prober_kw=None, origin_offset=None):
     """Fake prober + SMU tool (FakeB1500, or the real K4200 driver on a FakeK4200Visa) whose simulated
     device follows the fake chuck position.
     `dead` = open sites; `faults` = {key: 'open' | 'short' | 'gate_break' | 'overflow'};
@@ -174,7 +178,8 @@ def make_fake_instruments(cfg, full, origin_key, dead=(), fail_on_trigger=None, 
     x0, y0 = res.x, res.y
     t = cfg['motion']['transform']
     o = full.set_index('key').loc[origin_key]
-    ox, oy = dm.to_stage(o['x'], o['y'], **t)
+    off = origin_offset or (0.0, 0.0)
+    ox, oy = dm.to_stage(o['x'] + off[0], o['y'] + off[1], **t)
     pos, sites = [], []
     for _, r in full.iterrows():
         sx, sy = dm.to_stage(r['x'], r['y'], **t)
@@ -212,7 +217,7 @@ def confirm(prompt):
 
 
 def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, origin=None, data_dir=None,
-        fakes=None, interactive=True, keep_order=False):
+        fakes=None, interactive=True, keep_order=False, origin_offset=None):
     """Returns (summary_rows, bench_or_None). `fakes` = (bench, prober_resource, smu_inst) for tests."""
     data_dir = data_dir or cfg['data_dir']
     show = bool(cfg.get('show_plots')) and live
@@ -234,9 +239,11 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
     origin_key = dm.parse_keys(origin or cfg['origin_device'])[0]
     tool_name, tool, idvg = smu_tool(cfg)
     log(f"Mode: {'LIVE' if live else 'DRY RUN (fake instruments, no GPIB)'} | SMU tool {tool_name} | "
-        f"experiment {exp} | origin {origin_key}")
+        f"experiment {exp} | origin {origin_key}"
+        + (f" on the die at layout offset ({origin_offset[0]:g}, {origin_offset[1]:g}) um" if origin_offset else ''))
 
-    plan, full = build_plan(cfg, only, columns, L_values, limit, origin_key, data_dir, log, keep_order)
+    plan, full = build_plan(cfg, only, columns, L_values, limit, origin_key, data_dir, log, keep_order,
+                            origin_offset)
     log(f"Planned devices: {len(plan)}")
     for p in plan[:12]:
         log(f"  {p['key']:>8s}  target ({p['tx']:8.1f}, {p['ty']:8.1f})  step ({p['dx']:7.1f}, {p['dy']:7.1f}) um"
@@ -252,7 +259,9 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
                 f"LIVE RUN on {tool_name}: {exp}"
                 + (f" ({stress_stair.stress_label(stress_stair.params(cfg.get('stress_stair', {})))} stress)"
                    if exp == 'stress_stair' else '')
-                + f", {len(plan)} devices. Probes must be landed on {origin_key}. "
+                + f", {len(plan)} devices. Probes must be landed on {origin_key}"
+                + (f" of the die at layout offset ({origin_offset[0]:g}, {origin_offset[1]:g}) um" if origin_offset
+                   else '') + ". "
                 f"SMUs {' '.join(f'{t}={s}' for t, s in cfg['smu_map'].items())}. First step "
                 f"({plan[0]['dx']:.1f}, {plan[0]['dy']:.1f}) um."):
             log("Aborted by user before connecting."); log.close()
@@ -271,7 +280,7 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
             raise
         waits = dict(xy_wait_s=m['xy_wait_s'], z_wait_s=m['z_wait_s'])
     else:
-        bench, res, smu_inst = fakes or make_fake_instruments(cfg, full, origin_key)
+        bench, res, smu_inst = fakes or make_fake_instruments(cfg, full, origin_key, origin_offset=origin_offset)
         waits = dict(xy_wait_s=0, z_wait_s=0)
     prober = prober_mod.VeloxProber(res, wait_mode=m['wait_mode'], velocity_pct=m['velocity_pct'],
                                     pos_tolerance_um=m['pos_tolerance_um'],
@@ -381,6 +390,8 @@ def main(argv=None):
     ap.add_argument('--columns', help="e.g. 'A,B,C' or '28,29'")
     ap.add_argument('--L', dest='L_values', help="e.g. '2,1,0.5'")
     ap.add_argument('--origin', help="device the probes are landed on now (default from config)")
+    ap.add_argument('--origin-die-offset', help="X,Y: layout um of the die the probes are on now relative to the "
+                    "die being measured (e.g. '0,8000' = --origin device of the die above); not saved in the config")
     ap.add_argument('--data-dir', help='override data_dir')
     ap.add_argument('--repeat', action='store_true', help='remeasure devices that already have data')
     ap.add_argument('--keep-order', action='store_true', help='visit the --only devices in the order given')
@@ -399,7 +410,8 @@ def main(argv=None):
         cfg['repeat_measurement'] = True
     run(cfg, live=a.live, only=a.only, columns=a.columns.split(',') if a.columns else None,
         L_values=a.L_values.split(',') if a.L_values else None, limit=a.limit, origin=a.origin,
-        data_dir=a.data_dir, keep_order=a.keep_order)
+        data_dir=a.data_dir, keep_order=a.keep_order,
+        origin_offset=tuple(float(v) for v in a.origin_die_offset.split(',')) if a.origin_die_offset else None)
 
 
 if __name__ == '__main__':

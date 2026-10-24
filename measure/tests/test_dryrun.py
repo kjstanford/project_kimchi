@@ -170,6 +170,15 @@ def test_limits_and_origin():
     cols = "ABCGHIJKL"   # the wTLM layout has no D-F
     assert keys == [f"{c}:0.04" for c in cols] + [f"{c}:0.06" for c in cols[::-1]], keys
     assert (plan[0]['dx'], plan[0]['dy']) == (0.0, 0.0) and (plan[9]['dx'], plan[9]['dy']) == (0.0, -200.0)
+
+    # probes on L:2 of the die 8000 um above: the first step crosses dies in hops of <= max_step_um
+    plan, _ = run_map.build_plan(cfg, origin='L:2', L_values=['0.04', '0.06'], data_dir=DATA, log=lambda m: None,
+                                 origin_offset=(0.0, 8000.0))
+    assert (plan[0]['dx'], plan[0]['dy']) == (-2200.0, -5600.0) and plan[0]['hops'] == 3, plan[0]
+    assert all(p['hops'] == 1 for p in plan[1:]) and (plan[9]['dx'], plan[9]['dy']) == (0.0, -200.0)
+    rows, bench = run_map.run(cfg, only='A:0.04,B:0.04', origin='L:2', origin_offset=(0.0, 8000.0),
+                              data_dir=DATA, interactive=False)
+    assert [r['status'] for r in rows] == ['measured', 'measured'], rows   # fake devices found on the new die
     print("test_limits_and_origin OK")
 
 
