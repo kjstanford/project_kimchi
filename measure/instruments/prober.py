@@ -45,13 +45,15 @@ class VeloxProber:
 
     def __init__(self, resource, wait_mode='sleep', xy_wait_s=20, z_wait_s=10,
                  velocity_pct=10, pos_tolerance_um=5.0, pos_tolerance_rel=0.03, max_drift_um=20.0,
-                 drift_correct_um=None, log=print):
+                 drift_correct_um=None, drift_limit_um=None, max_fix_moves=3, log=print):
         """Per move, the readback must match the command within
         max(pos_tolerance_um, pos_tolerance_rel * |move|). Across the run, the
         accumulated readback deviation from the intended path must stay below
         max_drift_um (None disables the drift check). With drift_correct_um set, any
         axis whose accumulated drift has reached +/-drift_correct_um is cancelled in
-        the next move (None disables the correction)."""
+        the next move (None disables the correction). With drift_limit_um set, a landing with any axis
+        beyond +/-drift_limit_um gets extra correction moves right away (at most max_fix_moves; still
+        beyond after them raises), so every landing stays within the limit."""
         if wait_mode not in ('sleep', 'query'):
             raise ValueError("wait_mode must be 'sleep' or 'query'")
         self.res = resource
@@ -63,10 +65,13 @@ class VeloxProber:
         self.tol_rel = pos_tolerance_rel
         self.max_drift = max_drift_um
         self.drift_correct = drift_correct_um
+        self.drift_limit = drift_limit_um
+        self.max_fix_moves = max_fix_moves
         self.log = log
         self.ref = None              # chuck (x, y) readback at the first move
         self.cmd_total = [0.0, 0.0]  # summed intended chuck displacement since ref (corrections excluded)
         self.n_corrections = 0
+        self.n_fix_moves = 0
 
     def _cmd(self, cmd, wait_s):
         if self.wait_mode == 'query':
@@ -120,3 +125,18 @@ class VeloxProber:
         if self.max_drift is not None and math.hypot(*drift) > self.max_drift:
             raise ProberError(f"Accumulated chuck drift ({drift[0]:.3f}, {drift[1]:.3f}) um exceeds "
                               f"max_drift_um={self.max_drift}")
+        if self.drift_limit is None:
+            return
+        for _ in range(self.max_fix_moves):
+            if max(abs(drift[0]), abs(drift[1])) <= self.drift_limit:
+                return
+            fx, fy = -drift[0], -drift[1]
+            self.n_fix_moves += 1
+            self.log(f"Drift beyond +/-{self.drift_limit:g} um: correction move ({fx:+.3f}, {fy:+.3f}) um")
+            self._cmd(f'MoveChuck {fx:.3f} {fy:.3f} R Y {self.velocity:g}.', self.xy_wait_s)
+            x2, y2, _ = self.read_position()
+            drift = self.drift(x2, y2)
+            self.log(f"Chuck now at {x2:.3f}, {y2:.3f} | accumulated drift ({drift[0]:+.3f}, {drift[1]:+.3f}) um")
+        if max(abs(drift[0]), abs(drift[1])) > self.drift_limit:
+            raise ProberError(f"Accumulated chuck drift ({drift[0]:.3f}, {drift[1]:.3f}) um still beyond "
+                              f"+/-{self.drift_limit:g} um after {self.max_fix_moves} correction moves")

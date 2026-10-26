@@ -77,7 +77,8 @@ def initial_scan(b1500, smus, cfg, W, L, save_dir, descriptor, save=True, show=F
     Vg_f, Id_f = get_sweeps(Vg)['f'], get_sweeps(Id)['f']
     Id_lo, Id_hi, Ig_hi = np.nanmin(Id), np.nanmax(Id), np.nanmax(Ig)
     out = {'skip': False, 'reason': '', 'gate_start': cfg['default_start'], 'Vt': np.nan,
-           'on_off': float(Id_hi / Id_lo) if Id_lo > 0 else np.inf, 'flags': status_flags(data), 'file': path}
+           'on_off': float(Id_hi / Id_lo) if Id_lo > 0 else np.inf, 'flags': status_flags(data), 'file': path,
+           'Id_max': float(Id_hi), 'Ig_max': float(Ig_hi)}
     if out['flags']:
         log(f"Status flags: {out['flags']}")
 
@@ -157,7 +158,8 @@ def measure_device(b1500, smus, cfg, W, L, save_dir, descriptor, save=True, show
     scan = initial_scan(b1500, smus, cfg, W, L, save_dir, descriptor, save, show, log, idvg=idvg)
     res = {'status': 'screened_out' if scan['skip'] else 'measured', 'reason': scan['reason'],
            'Vt_V': scan['Vt'], 'on_off': scan['on_off'], 'gate_start_V': scan['gate_start'],
-           'flags': scan['flags'], 'scan_file': scan['file'], 'main_file': None}
+           'flags': scan['flags'], 'scan_file': scan['file'], 'main_file': None,
+           'Id_max_A': scan['Id_max'], 'Ig_max_A': scan['Ig_max']}
     if scan['skip']:
         log(f"SKIPPING main sweep: {scan['reason']}")
     elif cfg.get('scan_only', False):

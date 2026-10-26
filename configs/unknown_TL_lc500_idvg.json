@@ -1,0 +1,67 @@
+{
+  "sample": {
+    "name": "unknown",
+    "die_idx": "top_left",
+    "Lc_nm": 500,
+    "W_um": 10
+  },
+  "device_csv": "layouts/jimin_sdc_noTLM_Lc500.csv",
+  "data_dir": "data",
+  "origin_device": "A:2",
+  "start_row": "bottom",
+  "first_row": "left",
+  "repeat_measurement": false,
+  "show_plots": false,
+  "smu_map": {
+    "gate": "smu3",
+    "drain": "smu1",
+    "source": "smu2"
+  },
+  "instruments": {
+    "prober_resource": "GPIB0::22::INSTR",
+    "b1500_resource": "GPIB0::16::INSTR"
+  },
+  "motion": {
+    "wait_mode": "sleep",
+    "xy_wait_s": 20,
+    "z_wait_s": 10,
+    "velocity_pct": 10,
+    "pos_tolerance_um": 5.0,
+    "pos_tolerance_rel": 0.03,
+    "max_drift_um": 20.0,
+    "drift_correct_um": 3.0,
+    "max_step_um": 2600,
+    "bounds_margin_um": 300,
+    "transform": {
+      "rotate_deg": 0,
+      "mirror_x": false,
+      "mirror_y": false
+    }
+  },
+  "measurement": {
+    "Irange": "1 nA limited auto ranging",
+    "Vrange": "2 V limited auto ranging",
+    "compliance": 0.005,
+    "default_start": -2.5,
+    "default_stop": 2.0,
+    "start_limit": -3.5,
+    "scan_step": 0.1,
+    "main_step": 0.05,
+    "Vd_scan": 0.05,
+    "IdVg_drain_list": [
+      0.05
+    ],
+    "IdVg_cycles": 2,
+    "screen": {
+      "Vt_Id_per_WL": 1e-08,
+      "Vt_min": -3.5,
+      "Vt_max": 2.0,
+      "Ig_max": 1e-09,
+      "Id_max_min": 1e-07,
+      "on_off_min": 100,
+      "Voff_Id": 2.5e-12,
+      "short_Id_min": 1e-05,
+      "short_on_off_max": 2.0
+    }
+  }
+}

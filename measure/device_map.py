@@ -66,14 +66,16 @@ def filter_devices(df, only=None, columns=None, L_values=None):
     return df
 
 
-def serpentine(df, row_tol_um=1.0, first_row='left'):
-    """Bottom row first, starting from the `first_row` side ('left' = A->L, 'right' = L->A);
-    then alternate direction on each row up."""
+def serpentine(df, row_tol_um=1.0, first_row='left', start_row='bottom'):
+    """`start_row` first ('bottom' = lowest layout y, 'top' = highest), starting from the `first_row` side
+    ('left' = A->L, 'right' = L->A); then alternate direction on each following row."""
     if first_row not in ('left', 'right'):
         raise ValueError("first_row must be 'left' or 'right'")
+    if start_row not in ('bottom', 'top'):
+        raise ValueError("start_row must be 'bottom' or 'top'")
     df = df.copy()
     df['row'] = (df['y'] / row_tol_um).round().astype(int)
-    rows = sorted(df['row'].unique())
+    rows = sorted(df['row'].unique(), reverse=start_row == 'top')
     flip = first_row == 'right'
     parts = [df[df['row'] == r].sort_values('x', ascending=((i % 2 == 0) != flip)) for i, r in enumerate(rows)]
     return pd.concat(parts).drop(columns='row').reset_index(drop=True)
@@ -92,8 +94,11 @@ def to_stage(x, y, rotate_deg=0, mirror_x=False, mirror_y=False):
     return c * x - s * y, s * x + c * y
 
 
-def plan_moves(ordered, origin_key, transform, max_step_um, bounds_margin_um, full_df, split_long=False):
+def plan_moves(ordered, origin_key, transform, max_step_um, bounds_margin_um, full_df, split_long=False,
+               origin_offset=(0.0, 0.0)):
     """Stage targets relative to the device the probes are currently landed on (origin_key).
+    `origin_offset` = layout (x, y) um of the die the probes are on now relative to the die being mapped
+    (e.g. (0, 8000) = probes on origin_key of the die 8000 um above).
 
     Returns a list of dicts: device row fields + target (tx, ty), step (dx, dy) in stage um and
     hops = number of equal sub-moves for that step. A step longer than max_step_um raises, or with
@@ -103,7 +108,7 @@ def plan_moves(ordered, origin_key, transform, max_step_um, bounds_margin_um, fu
     if origin_key not in set(full_df['key']):
         raise ValueError(f"Origin device {origin_key} is not in the device CSV")
     o = full_df.set_index('key').loc[origin_key]
-    ox, oy = to_stage(o['x'], o['y'], **transform)
+    ox, oy = to_stage(o['x'] + origin_offset[0], o['y'] + origin_offset[1], **transform)
     xs, ys = zip(*(to_stage(x, y, **transform) for x, y in zip(full_df['x'], full_df['y'])))
     lo_x, hi_x = min(xs) - ox - bounds_margin_um, max(xs) - ox + bounds_margin_um
     lo_y, hi_y = min(ys) - oy - bounds_margin_um, max(ys) - oy + bounds_margin_um

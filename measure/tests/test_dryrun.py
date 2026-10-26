@@ -162,6 +162,23 @@ def test_limits_and_origin():
     assert keys[:12] == [f"{c}:2" for c in "LKJIHGFEDCBA"], keys[:12]
     assert keys[12:24] == [f"{c}:1" for c in "ABCDEFGHIJKL"], keys[12:24]
     assert (plan[0]['dx'], plan[0]['dy']) == (0.0, 0.0) and (plan[1]['dx'], plan[1]['dy']) == (-200.0, 0.0)
+    # start on the top row from A:0.04: A->L on L=0.04, then L->A on L=0.06 (one row down)
+    cfg = fresh()
+    cfg['start_row'] = 'top'
+    plan, _ = run_map.build_plan(cfg, origin='A:0.04', L_values=['0.04', '0.06'], data_dir=DATA, log=lambda m: None)
+    keys = [p['key'] for p in plan]
+    cols = "ABCGHIJKL"   # the wTLM layout has no D-F
+    assert keys == [f"{c}:0.04" for c in cols] + [f"{c}:0.06" for c in cols[::-1]], keys
+    assert (plan[0]['dx'], plan[0]['dy']) == (0.0, 0.0) and (plan[9]['dx'], plan[9]['dy']) == (0.0, -200.0)
+
+    # probes on L:2 of the die 8000 um above: the first step crosses dies in hops of <= max_step_um
+    plan, _ = run_map.build_plan(cfg, origin='L:2', L_values=['0.04', '0.06'], data_dir=DATA, log=lambda m: None,
+                                 origin_offset=(0.0, 8000.0))
+    assert (plan[0]['dx'], plan[0]['dy']) == (-2200.0, -5600.0) and plan[0]['hops'] == 3, plan[0]
+    assert all(p['hops'] == 1 for p in plan[1:]) and (plan[9]['dx'], plan[9]['dy']) == (0.0, -200.0)
+    rows, bench = run_map.run(cfg, only='A:0.04,B:0.04', origin='L:2', origin_offset=(0.0, 8000.0),
+                              data_dir=DATA, interactive=False)
+    assert [r['status'] for r in rows] == ['measured', 'measured'], rows   # fake devices found on the new die
     print("test_limits_and_origin OK")
 
 
@@ -1675,13 +1692,98 @@ def test_live_needs_confirmation(monkey_input='no'):
     print("test_live_needs_confirmation OK (declined before any connection)")
 
 
+def multi_cfg(drift_correct_um=2.0, drift_limit_um=3.0):
+    """The unknown_2 six-array config cut to two short arrays (L = 2 and 1 only): bottom-left Lc100 and
+    top-left Lc80 (the die 8000 um above), probes starting on L:0.04 of bottom-left Lc500."""
+    import pandas as pd
+    shutil.rmtree(DATA, ignore_errors=True)
+    os.makedirs(DATA, exist_ok=True)
+    cfg = json.load(open('configs/unknown_2_BL_TL_lc100_80_60_idvg.json'))
+    segs = []
+    for s in (cfg['segments'][0], cfg['segments'][3]):
+        full = pd.read_csv(s["device_csv"])
+        path = os.path.join(DATA, os.path.basename(s['device_csv']))
+        full[full['L in um'] >= 1].to_csv(path, index=False)
+        segs.append({**s, 'device_csv': path})
+    cfg['segments'] = segs
+    cfg['motion'].update(drift_correct_um=drift_correct_um, drift_limit_um=drift_limit_um)
+    return cfg
+
+
+def test_multi_segment_run():
+    """'segments': two arrays on two dies in one run; data, summaries per die / Lc; resume; the
+    segment-start stop when the first devices of an array all fail."""
+    import csv as _csv
+    cfg = multi_cfg()
+    plan, sites = run_map.build_multi_plan(cfg, data_dir=DATA)
+    assert len(plan) == 48 and [p['key'] for p in plan[:2]] == ['L:2', 'K:2'], [p['key'] for p in plan[:3]]
+    assert (plan[0]['dx'], plan[0]['dy'], plan[0]['hops']) == (-2600.0, -2400.0, 2), plan[0]
+    p24 = plan[24]   # top-left Lc80 starts at L:2 (bottom row, right side), 8000 um up from bottom-left Lc100
+    assert p24['key'] == 'L:2' and p24['cfg']['sample']['die_idx'] == 'top_left', p24['key']
+    assert abs(p24['tx'] - 2.41) < 1e-6 and abs(p24['ty'] - (8000 + 2806.7 - 2400)) < 1e-6, (p24['tx'], p24['ty'])
+    rows, bench = run_map.run(cfg, data_dir=DATA, interactive=False)
+    assert len(rows) == 48 and all(r['status'] == 'measured' for r in rows), [(r['key'], r['reason']) for r in rows]
+    assert [(r['die_idx'], r['Lc_nm']) for r in rows[::24]] == [('bottom_left', 100), ('top_left', 80)], rows[::24]
+    for die, lc in (('bottom_left', 100), ('top_left', 80)):
+        folder = os.path.join(DATA, 'unknown_2', die)
+        summ = [f for f in os.listdir(folder) if f.startswith('summary_')]
+        assert len(summ) == 1 and os.path.isdir(os.path.join(folder, f'Lc{lc}', 'A_L2')), os.listdir(folder)
+        with open(os.path.join(folder, summ[0])) as f:
+            assert {(r['die_idx'], r['Lc_nm']) for r in _csv.DictReader(f)} == {(die, str(lc))}
+    assert [f for f in os.listdir(os.path.join(DATA, 'unknown_2')) if f.startswith('run_')], "run log in sample dir"
+    rows, _ = run_map.run(cfg, data_dir=DATA, interactive=False)
+    assert rows == [], "resume: all done"
+
+    cfg = multi_cfg()
+    plan, sites = run_map.build_multi_plan(cfg, data_dir=DATA)
+    # second array: 2 gate breakdowns, then opens; only the opens count toward the stop
+    keys = [f"top_left Lc80|{p['key']}" for p in plan[24:33]]
+    fakes = run_map.make_fake_instruments(cfg, sites, 'origin|L:0.04', dead=keys[2:],
+                                          faults={k: 'gate_break' for k in keys[:2]})
+    rows, _ = run_map.run(cfg, data_dir=DATA, fakes=fakes)
+    assert len(rows) == 24 + 2 + cfg['segment_start_max_fails'], len(rows)
+    assert all(r['status'] != 'measured' for r in rows[24:]), rows[24:]
+    assert all(r['reason'].startswith('gate compliance') for r in rows[24:26]), [r['reason'] for r in rows[24:26]]
+    assert all(r['Id_max_A'] < 1e-9 for r in rows[26:]), [r['Id_max_A'] for r in rows[26:]]
+    print("test_multi_segment_run OK")
+
+
+def test_drift_limit():
+    """Systematic chuck error (0.2 % scale + 0.1 deg) over the two-die run, long hops included:
+    drift_correct_um = 2 folds corrections into normal moves, drift_limit_um = 3 adds a correction move
+    after any landing beyond +/-3 um, so every contact is within +/-3 um of the layout path."""
+    import re
+    err = dict(move_scale=1.002, move_rot_deg=0.1)
+    cfg = multi_cfg()
+    plan, sites = run_map.build_multi_plan(cfg, data_dir=DATA)
+    rows, bench = run_map.run(cfg, data_dir=DATA,
+                              fakes=run_map.make_fake_instruments(cfg, sites, 'origin|L:0.04', prober_kw=err))
+    assert len(rows) == 48 and all(r['status'] == 'measured' for r in rows), [r['reason'] for r in rows]
+    folder = os.path.join(DATA, 'unknown_2')
+    log = open(os.path.join(folder, [f for f in os.listdir(folder) if f.startswith('run_')][-1])).read()
+    landings = [re.findall(r'accumulated drift \(([-+.\d]+), ([-+.\d]+)\)', chunk)
+                for chunk in log.split('Chuck -> contact height')[1:-1]]
+    worst = max(abs(float(v)) for chunk in landings if chunk for v in chunk[-1])
+    n_fix = log.count('correction move')
+    assert worst <= 3.0 and n_fix >= 1, (worst, n_fix)
+
+    cfg = multi_cfg(drift_limit_um=None)     # without the hard limit the long hops overshoot 3 um
+    plan, sites = run_map.build_multi_plan(cfg, data_dir=DATA)
+    run_map.run(cfg, data_dir=DATA, fakes=run_map.make_fake_instruments(cfg, sites, 'origin|L:0.04', prober_kw=err))
+    log = open(os.path.join(folder, [f for f in os.listdir(folder) if f.startswith('run_')][-1])).read()
+    drifts = [abs(float(v)) for d in re.findall(r'accumulated drift \(([-+.\d]+), ([-+.\d]+)\)', log) for v in d]
+    assert max(drifts) > 3.0 and 'correction move' not in log, max(drifts)
+    print(f"test_drift_limit OK ({n_fix} correction moves, worst landing {worst:.2f} um)")
+
+
 if __name__ == '__main__':
     import io, contextlib
     quiet = io.StringIO()
     tests = [test_full_map, test_resume, test_fault_cleanup, test_keyboard_interrupt,
              test_dead_device_screened, test_limits_and_origin, test_chuck_drift_guard,
              test_fmt21_parse, test_fault_devices_and_compliance, test_igzo_v6_device_id_map,
-             test_drift_correction, test_long_move_hops_keep_order, test_max_id_scales_with_WL,
+             test_drift_correction, test_long_move_hops_keep_order, test_multi_segment_run, test_drift_limit,
+             test_max_id_scales_with_WL,
              test_k4200_map, test_gc_map_scan_only, test_gc_wbl_sweep, test_gc_wwl_sweep, test_gc_retention,
              test_gc_pmu_rw, test_gc_pmu_rw_ranges, test_gc_pmu_ret, test_gc_screen_ret, test_gc_screen_auto_range, test_gc_screen_30us, test_gc_screen_pre_rw,
              test_k4200_driver_kxci,
