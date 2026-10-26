@@ -26,8 +26,19 @@ never stressed twice). The earlier 'bias_stress' and 'pmu_diag' experiments are 
 Clarius gc_pmu_retention over :PMU:SARB (measure.gc_pmu_ret, 'gc_pmu_ret' block; k4200.rpm_cmd 'pmu').
 'gc_screen_ret' (4200A SMUs + PMUs): per cell in one landing, WBL + WWL sweeps, then the PMU retention only if
 both pass the 'gc_screen' criteria (measure.gc_screen); one summary row per test ('test' column).
+
+Config 'segments' (Column:L arrays, idvg only): measure several arrays, on one or several dies, in one run with
+one chuck-drift reference. The probes start on 'origin_device' of the array in 'device_csv' / 'sample'; each
+segment {die_idx, Lc_nm, device_csv, array_offset_um, die_offset_um, start_row, first_row} is one array, visited
+in list order, serpentine within it. array_offset_um = layout (x, y) of the segment array's (0, 0) device
+relative to the origin array's (0, 0) on the same die; die_offset_um = layout offset of the segment's die from
+the origin die. Data go to each segment's die / Lc folders, one summary per die, the run log in the sample
+folder. 'segment_start_max_fails' (optional): stop the run when that many devices at the start of a segment are
+open (max |Id| of the initial scan < 'segment_open_Id_max_A', default 1 nA, and no gate compliance) before any is
+measured (probes probably not on the array); other failures (breakdown, leakage, short) do not count.
 """
 import argparse
+import contextlib
 import csv
 import json
 import math
@@ -37,6 +48,7 @@ import time
 
 import matplotlib
 import numpy as np
+import pandas as pd
 
 from measure import device_map as dm
 from measure import fet_idvg, fet_idvg_k4200, gc_pmu, gc_pmu_ret, gc_screen, gc_sweep
@@ -53,7 +65,7 @@ SUMMARY_FIELDS = ['time', 'sample', 'die_idx', 'key', 'Lc_nm', 'col', 'W_um', 'L
                   'Vt_bwd_V', 'hyst_V', 'Ileak_max_A', 'Vt_s0_V', 'I0_s1_A', 'I0_s0_A', 'Iend_s1_A', 'Iend_s0_A',
                   'Iret_s1_start_A', 'Iret_s1_end_A', 'Iret_s0_start_A', 'Iret_s0_end_A', 'ret_ratio_end',
                   'I_read1_A', 'I_read0_A', 'read_ratio', 'margin_A', 'I_read1_std_A', 'I_read0_std_A', 'Irange_A', 'test',
-                  'I_read1_max_A', 'I_read0_absmax_A', 'Irange_s0_A']
+                  'I_read1_max_A', 'I_read0_absmax_A', 'Irange_s0_A', 'Id_max_A', 'Ig_max_A']
 EXPERIMENTS = ('idvg', 'stress_stair', 'gc_wbl', 'gc_wwl', 'gc_retention', 'gc_pmu_rw', 'gc_pmu_ret', 'gc_screen_ret')
 PMU_EXPERIMENTS = ('stress_stair',)
 GC_EXPERIMENTS = ('gc_wbl', 'gc_wwl', 'gc_retention', 'gc_pmu_rw', 'gc_pmu_ret', 'gc_screen_ret')
@@ -166,6 +178,71 @@ def build_plan(cfg, only=None, columns=None, L_values=None, limit=None, origin=N
     return plan, full
 
 
+def segment_cfg(cfg, seg):
+    """Config of one segment of a multi-array run: its die, Lc, device CSV and serpentine start."""
+    c = {k: v for k, v in cfg.items() if k != 'segments'}
+    c['sample'] = {**cfg['sample'], 'die_idx': seg['die_idx'], 'Lc_nm': seg['Lc_nm']}
+    c['device_csv'] = seg['device_csv']
+    for k in ('start_row', 'first_row'):
+        if k in seg:
+            c[k] = seg[k]
+    return c
+
+
+def segment_label(c):
+    return f"{c['sample']['die_idx']} Lc{c['sample']['Lc_nm']}"
+
+
+def build_multi_plan(cfg, origin=None, limit=None, data_dir=None, log=print):
+    """Plan over cfg['segments'] (see the module docstring). Returns (plan, sites): plan entries carry the
+    segment config under 'cfg'; sites = every device of the origin array and the segments in one layout frame,
+    keys '<segment>|<key>' (the origin array: 'origin|<key>'), for the bounds and the fake bench."""
+    m = cfg['motion']
+    t = m['transform']
+    base = dm.load_devices(cfg['device_csv'])
+    origin_key = dm.parse_keys(origin or cfg['origin_device'])[0]
+    if origin_key not in set(base['key']):
+        raise ValueError(f"Origin device {origin_key} is not in {cfg['device_csv']}")
+    o = base.set_index('key').loc[origin_key]
+    ox, oy = dm.to_stage(o['x'], o['y'], **t)
+    sites = [base.assign(key='origin|' + base['key'])]
+    todo = []
+    for seg in cfg['segments']:
+        c = segment_cfg(cfg, seg)
+        full = dm.load_devices(c['device_csv'])
+        if full['lc'].isna().any() or set(full['lc']) != {c['sample']['Lc_nm']}:
+            raise ValueError(f"{c['device_csv']}: 'Lc in nm' must all be the segment's Lc_nm {c['sample']['Lc_nm']}")
+        off = [a + b for a, b in zip(seg.get('array_offset_um', (0, 0)), seg.get('die_offset_um', (0, 0)))]
+        sites.append(full.assign(key=segment_label(c) + '|' + full['key'], x=full['x'] + off[0],
+                                 y=full['y'] + off[1]))
+        sel = dm.serpentine(full, first_row=c.get('first_row', 'left'), start_row=c.get('start_row', 'bottom'))
+        if not cfg.get('repeat_measurement', False):
+            done = [k for k, (_, r) in zip(sel['key'], sel.iterrows()) if already_measured(c, r, data_dir)]
+            if done:
+                log(f"Resume: {segment_label(c)}: skipping {len(done)} already-measured devices")
+            sel = sel[~sel['key'].isin(done)]
+        todo += [(c, off, r) for _, r in sel.iterrows()]
+    sites = pd.concat(sites, ignore_index=True)
+    if sites['key'].duplicated().any():
+        raise ValueError("Two segments with the same die and Lc")
+    if limit:
+        todo = todo[:limit]
+    xs, ys = zip(*(dm.to_stage(x, y, **t) for x, y in zip(sites['x'], sites['y'])))
+    lo_x, hi_x = min(xs) - ox - m['bounds_margin_um'], max(xs) - ox + m['bounds_margin_um']
+    lo_y, hi_y = min(ys) - oy - m['bounds_margin_um'], max(ys) - oy + m['bounds_margin_um']
+    plan, cx, cy = [], 0.0, 0.0
+    for c, off, r in todo:
+        sx, sy = dm.to_stage(r['x'] + off[0], r['y'] + off[1], **t)
+        tx, ty = sx - ox, sy - oy
+        if not (lo_x <= tx <= hi_x and lo_y <= ty <= hi_y):
+            raise ValueError(f"Target for {segment_label(c)} {r['key']} ({tx:.1f}, {ty:.1f}) is outside the map bounds")
+        dx, dy = tx - cx, ty - cy
+        hops = max(1, math.ceil(math.hypot(dx, dy) / m['max_step_um']))
+        plan.append({**r.to_dict(), 'cfg': c, 'tx': tx, 'ty': ty, 'dx': dx, 'dy': dy, 'hops': hops})
+        cx, cy = tx, ty
+    return plan, sites
+
+
 def make_fake_instruments(cfg, full, origin_key, dead=(), fail_on_trigger=None, faults=None, land_tol_um=10.0,
                           prober_kw=None, origin_offset=None):
     """Fake prober + SMU tool (FakeB1500, or the real K4200 driver on a FakeK4200Visa) whose simulated
@@ -233,21 +310,35 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
     if exp in GC_EXPERIMENTS:
         GC_FUNCS[exp][0](cfg)
 
-    run_dir = die_dir(cfg, data_dir)
+    multi = bool(cfg.get('segments'))
+    if multi and (only or columns or L_values or keep_order or origin_offset or exp != 'idvg'):
+        raise ValueError("a 'segments' run takes no --only/--columns/--L/--keep-order/--origin-die-offset "
+                         "and runs the idvg experiment only")
+    run_dir = os.path.join(data_dir, cfg['sample']['name']) if multi else die_dir(cfg, data_dir)
     stamp = time.strftime('%Y%m%d_%H%M%S')
     log = Logger(os.path.join(run_dir, f"run_{stamp}{'' if live else '_dryrun'}.log"))
     origin_key = dm.parse_keys(origin or cfg['origin_device'])[0]
     tool_name, tool, idvg = smu_tool(cfg)
     log(f"Mode: {'LIVE' if live else 'DRY RUN (fake instruments, no GPIB)'} | SMU tool {tool_name} | "
         f"experiment {exp} | origin {origin_key}"
+        + (f" of {segment_label(cfg)}" if multi else '')
         + (f" on the die at layout offset ({origin_offset[0]:g}, {origin_offset[1]:g}) um" if origin_offset else ''))
 
-    plan, full = build_plan(cfg, only, columns, L_values, limit, origin_key, data_dir, log, keep_order,
-                            origin_offset)
+    if multi:
+        plan, full = build_multi_plan(cfg, origin_key, limit, data_dir, log)
+        fake_origin = f'origin|{origin_key}'
+    else:
+        plan, full = build_plan(cfg, only, columns, L_values, limit, origin_key, data_dir, log, keep_order,
+                                origin_offset)
+        fake_origin = origin_key
     log(f"Planned devices: {len(plan)}")
-    for p in plan[:12]:
-        log(f"  {p['key']:>8s}  target ({p['tx']:8.1f}, {p['ty']:8.1f})  step ({p['dx']:7.1f}, {p['dy']:7.1f}) um"
-            + (f"  in {p['hops']} hops" if p.get('hops', 1) > 1 else ''))
+    for i, p in enumerate(plan):
+        first = multi and (i == 0 or p['cfg'] is not plan[i - 1]['cfg'])
+        if first:
+            log(f"  segment {segment_label(p['cfg'])}: {sum(q['cfg'] is p['cfg'] for q in plan)} devices")
+        if i < 12 or first:
+            log(f"  {p['key']:>8s}  target ({p['tx']:8.1f}, {p['ty']:8.1f})  step ({p['dx']:7.1f}, {p['dy']:7.1f}) um"
+                + (f"  in {p['hops']} hops" if p.get('hops', 1) > 1 else ''))
     if not plan:
         log("Nothing to do."); log.close()
         return [], None
@@ -259,7 +350,10 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
                 f"LIVE RUN on {tool_name}: {exp}"
                 + (f" ({stress_stair.stress_label(stress_stair.params(cfg.get('stress_stair', {})))} stress)"
                    if exp == 'stress_stair' else '')
-                + f", {len(plan)} devices. Probes must be landed on {origin_key}"
+                + f", {len(plan)} devices"
+                + (f" in {len({id(p['cfg']) for p in plan})} arrays" if multi else '')
+                + f". Probes must be landed on {origin_key}"
+                + (f" of {segment_label(cfg)}" if multi else '')
                 + (f" of the die at layout offset ({origin_offset[0]:g}, {origin_offset[1]:g}) um" if origin_offset
                    else '') + ". "
                 f"SMUs {' '.join(f'{t}={s}' for t, s in cfg['smu_map'].items())}. First step "
@@ -280,13 +374,13 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
             raise
         waits = dict(xy_wait_s=m['xy_wait_s'], z_wait_s=m['z_wait_s'])
     else:
-        bench, res, smu_inst = fakes or make_fake_instruments(cfg, full, origin_key, origin_offset=origin_offset)
+        bench, res, smu_inst = fakes or make_fake_instruments(cfg, full, fake_origin, origin_offset=origin_offset)
         waits = dict(xy_wait_s=0, z_wait_s=0)
     prober = prober_mod.VeloxProber(res, wait_mode=m['wait_mode'], velocity_pct=m['velocity_pct'],
                                     pos_tolerance_um=m['pos_tolerance_um'],
                                     pos_tolerance_rel=m.get('pos_tolerance_rel', 0.0),
                                     max_drift_um=m.get('max_drift_um'), drift_correct_um=m.get('drift_correct_um'),
-                                    log=log, **waits)
+                                    drift_limit_um=m.get('drift_limit_um'), log=log, **waits)
     if exp in GC_EXPERIMENTS:
         smus = tool.get_gc_smus(smu_inst, cfg['smu_map'])
         p = GC_FUNCS[exp][0](cfg) if exp not in GC_PMU_EXPERIMENTS else {'Irange': 1e-6}   # SMU range check only
@@ -302,14 +396,31 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
             log.close()
             raise
 
-    summary_path = os.path.join(run_dir, f"summary_{stamp}{'' if live else '_dryrun'}.csv")
+    summary_name = f"summary_{stamp}{'' if live else '_dryrun'}.csv"
+    summary_dirs = list(dict.fromkeys(die_dir(p['cfg'], data_dir) for p in plan)) if multi else [run_dir]
+    max_fails = cfg.get('segment_start_max_fails') if multi else None
+    open_Id_max = cfg.get('segment_open_Id_max_A', 1e-9)
     rows = []
-    with open(summary_path, 'w', newline='') as sf:
-        writer = csv.DictWriter(sf, fieldnames=SUMMARY_FIELDS)
-        writer.writeheader()
+    with contextlib.ExitStack() as stack:
+        writers = {}              # die folder -> (file, csv writer)
+        for folder in summary_dirs:
+            os.makedirs(folder, exist_ok=True)
+            sf = stack.enter_context(open(os.path.join(folder, summary_name), 'w', newline=''))
+            writers[folder] = (sf, csv.DictWriter(sf, fieldnames=SUMMARY_FIELDS))
+            writers[folder][1].writeheader()
+
+        def write_row(c, r):
+            sf, writer = writers[die_dir(c, data_dir) if multi else run_dir]
+            writer.writerow(r); sf.flush()
+        seg_fails = 0             # open devices in the current segment while none measured; None once one is
         try:
             for i, d in enumerate(plan):
-                log(f"=== [{i + 1}/{len(plan)}] {d['key']}  (layout x={d['x']:g}, y={d['y']:g})")
+                c = d.get('cfg', cfg)
+                if multi and (i == 0 or c is not plan[i - 1]['cfg']):
+                    log(f"--- segment {segment_label(c)}")
+                    seg_fails = 0
+                log(f"=== [{i + 1}/{len(plan)}] {(segment_label(c) + ' ') if multi else ''}{d['key']}  "
+                    f"(layout x={d['x']:g}, y={d['y']:g})")
                 tool.zero_outputs(smu_inst)
                 prober.separate()
                 if math.hypot(d['dx'], d['dy']) > 1e-6:
@@ -323,37 +434,48 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
                     break
                 prober.contact()
                 W = device_W(cfg, d)
-                row = {'time': time.strftime('%Y-%m-%d %H:%M:%S'), 'sample': cfg['sample']['name'],
-                       'die_idx': cfg['sample']['die_idx'], 'key': d['key'],
+                row = {'time': time.strftime('%Y-%m-%d %H:%M:%S'), 'sample': c['sample']['name'],
+                       'die_idx': c['sample']['die_idx'], 'key': d['key'],
                        'Lc_nm': d['lc'] if _has(d, 'lc') else '', 'col': d['col'], 'W_um': W, 'L_um': d['L'],
                        'x_um': d['x'], 'y_um': d['y']}
                 parts = [{}]              # one summary row per part (gc_pmu_rw with several ranges: one per range)
                 try:
                     if exp in GC_EXPERIMENTS:
                         fn = GC_FUNCS[exp][1]
-                        out = fn(smu_inst, smus, cfg, device_dir(cfg, d, data_dir), descriptor(cfg, d),
+                        out = fn(smu_inst, smus, cfg, device_dir(c, d, data_dir), descriptor(c, d),
                                  save=True, show=show, log=log)
                         parts = out if isinstance(out, list) else [out]
                     elif exp == 'stress_stair':
                         row.update(stress_stair.measure_device(smu_inst, smus, cfg, W, float(d['L']),
-                                                               device_dir(cfg, d, data_dir), descriptor(cfg, d),
+                                                               device_dir(c, d, data_dir), descriptor(c, d),
                                                                save=True, show=show, log=log))
                     else:
                         row.update(measure_device(smu_inst, smus, cfg['measurement'], W, float(d['L']),
-                                                  device_dir(cfg, d, data_dir), descriptor(cfg, d),
+                                                  device_dir(c, d, data_dir), descriptor(c, d),
                                                   save=True, show=show, log=log, idvg=idvg))
                 except Exception as e:
                     row.update(status='failed', reason=f"{type(e).__name__}: {e}")
-                    rows.append(row); writer.writerow(row); sf.flush()
+                    rows.append(row); write_row(c, row)
                     raise
                 finally:
                     tool.zero_outputs(smu_inst)
                 for part in parts:
                     r = {**row, **part}
-                    rows.append(r); writer.writerow(r); sf.flush()
+                    rows.append(r); write_row(c, r)
                     log(f"{d['key']}: {r['status']} {r.get('reason', '')}"
                         + (f"({r['Irange_A']:g} A range)" if r.get('Irange_A') else '')
                         + (f" | flags: {r['flags']}" if r.get('flags') else ''))
+                if seg_fails is not None:
+                    if row.get('status') == 'measured':
+                        seg_fails = None
+                    elif (row.get('Id_max_A', np.inf) < open_Id_max
+                          and not str(row.get('reason', '')).startswith('gate compliance')):
+                        seg_fails += 1
+                    if max_fails and seg_fails is not None and seg_fails >= max_fails:
+                        log(f"STOPPING: {seg_fails} devices at the start of {segment_label(c)} were open (max Id < "
+                            f"{open_Id_max:g} A) and none measured; the probes are probably not on the array. "
+                            f"Check the landing before resuming.")
+                        break
         except KeyboardInterrupt:
             log("KeyboardInterrupt: stopping run")
         except Exception as e:
@@ -376,7 +498,8 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
                     tool.close(smu_inst)
                 except Exception:
                     pass
-            log(f"Summary: {summary_path}")
+            for folder in summary_dirs:
+                log(f"Summary: {os.path.join(folder, summary_name)}")
             log.close()
     return rows, bench
 

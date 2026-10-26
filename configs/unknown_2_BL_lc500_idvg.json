@@ -29,7 +29,7 @@
     "pos_tolerance_um": 5.0,
     "pos_tolerance_rel": 0.03,
     "max_drift_um": 20.0,
-    "drift_correct_um": 5.0,
+    "drift_correct_um": 3.0,
     "max_step_um": 2600,
     "bounds_margin_um": 300,
     "transform": {
