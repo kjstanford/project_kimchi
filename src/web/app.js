@@ -1,4 +1,4 @@
-// Browser side of the web app: talks only to /api (webapp/app.py). No measurement logic lives here.
+// Browser side of the web app: talks only to /api (src/app/api.py). No measurement logic lives here.
 'use strict';
 const $ = (id) => document.getElementById(id);
 const S = { health: null, cfg: null, cfgName: null, preview: null, rows: [], seq: 0, es: null, roots: [] };
@@ -15,7 +15,7 @@ async function api(path, opts = {}) {
 }
 // Plots are optional: without Plotly the page still plans, runs and lists rows, and says why there is no figure.
 function plot(div, traces, layout) {
-  if (!window.Plotly) { $(div).textContent = 'Figure unavailable: plotly.min.js did not load (pip install plotly).'; return; }
+  if (!window.Plotly) { $(div).textContent = 'Figure unavailable: /vendor/plotly.min.js did not load.'; return; }
   Plotly.react(div, traces, layout, { responsive: true });
 }
 function purge(div) { if (window.Plotly) Plotly.purge(div); else $(div).textContent = ''; }
@@ -64,6 +64,8 @@ async function loadConfig(name) {
   invalidatePlan();
 }
 function invalidatePlan() { S.preview = null; $('btn-start').disabled = true; }
+// An error never sits beside a stale result: the plan and its map are cleared.
+function clearPlan() { $('plan-summary').textContent = 'No valid plan: see the message on the left.'; purge('map'); }
 $('cfg-select').addEventListener('change', (e) => loadConfig(e.target.value));
 ['cfg-text', 'opt-only', 'opt-columns', 'opt-L', 'opt-limit', 'opt-origin', 'opt-offset', 'opt-keep', 'opt-live']
   .forEach((id) => $(id).addEventListener('input', invalidatePlan));
@@ -82,13 +84,12 @@ $('btn-preview').addEventListener('click', async () => {
     S.preview = await api('/api/preview', { method: 'POST', body: { cfg, options: options(), live: $('opt-live').checked } });
     S.rows = []; renderRows();
     const p = S.preview;
-    const steps = p.plan.reduce((a, d) => a + Math.hypot(d.dx, d.dy), 0);
     $('plan-summary').textContent = `${v.experiment} on ${v.smu_tool}: ${p.plan.length} devices to visit out of `
-      + `${p.sites.length} on the map, origin ${p.origin}, total travel ${(steps / 1000).toFixed(2)} mm`
+      + `${p.sites.length} on the map, origin ${p.origin}, total travel ${(p.total_travel_um / 1000).toFixed(2)} mm`
       + (p.measured.length ? `, ${p.measured.length} already measured (skipped)` : '') + '.';
     renderMap();
     $('btn-start').disabled = !p.plan.length || isActive();
-  } catch (e) { showErrors([e.message]); invalidatePlan(); }
+  } catch (e) { showErrors([e.message]); invalidatePlan(); clearPlan(); }
 });
 
 // ---------- map ----------
@@ -190,14 +191,19 @@ async function showLatest(row) {
   if (!rp) { S.roots = await api('/api/data/roots'); rp = rootOf(f); }   // the dry-run folder appears with the first run
   if (!rp) return;
   try {
-    const t = await api(`/api/data/table?root=${encodeURIComponent(rp[0])}&path=${encodeURIComponent(rp[1])}`);
-    plotTable('latest', t, t.axes.x, t.axes.y, t.axes.logy, `${row.key}: ${t.name}`);
-  } catch (e) { /* the curve is a convenience; the row is already shown */ }
+    let t = await fetchTable(rp[0], rp[1], false);
+    if (t.axes.logy) t = await fetchTable(rp[0], rp[1], true);
+    plotTable('latest', t, t.axes.x, t.axes.y, `${row.key}: ${t.name}`);
+  } catch (e) { purge('latest'); $('latest').textContent = `Curve unavailable: ${e.message}`; }
 }
-function plotTable(div, t, x, ys, logy, title) {
+const fetchTable = (root, path, abs) =>
+  api(`/api/data/table?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}&abs=${abs}`);
+// t.abs_values: the backend returned |value| for the numeric columns, drawn on a log axis
+function plotTable(div, t, x, ys, title) {
   if (!x || !ys.length) { purge(div); return; }
+  const logy = t.abs_values;
   const traces = ys.map((y) => ({ type: 'scattergl', mode: 'lines+markers', name: logy ? `|${y}|` : y, x: t.data[x],
-    y: logy ? t.data[y].map((v) => (v === null ? null : Math.abs(v))) : t.data[y], marker: { size: 3 } }));
+    y: t.data[y], marker: { size: 3 } }));
   plot(div, traces, plotLayout({ title: { text: title, font: { size: 12 } }, margin: { l: 70, r: 20, t: 30, b: 50 },
     xaxis: axis(unitLabel(x)),
     yaxis: axis(ys.length === 1 ? unitLabel(ys[0]) : (ys.some((y) => /Current/.test(y)) ? 'current (A)' : ''),
@@ -234,15 +240,22 @@ async function openFile(root, path) {
   if (path.endsWith('.log')) {
     const r = await fetch(`/api/data/log?${q}`); $('file-text').textContent = await r.text(); $('file-text').hidden = false; return;
   }
-  const t = await api(`/api/data/table?${q}`);
+  let t;
+  try { t = await fetchTable(root, path, false); } catch (e) { $('file-title').textContent = `${path}: ${e.message}`; return; }
+  const tables = { false: t };
   const opt = (c) => `<option>${c}</option>`;
   $('ax-x').innerHTML = t.numeric.map(opt).join(''); $('ax-y').innerHTML = t.numeric.map(opt).join('');
   if (t.axes.x) $('ax-x').value = t.axes.x;
   [...$('ax-y').options].forEach((o) => { o.selected = t.axes.y.includes(o.value); });
   $('ax-logy').checked = t.axes.logy; $('axes').hidden = !t.numeric.length;
-  const draw = () => plotTable('file-plot', t, $('ax-x').value, [...$('ax-y').selectedOptions].map((o) => o.value), $('ax-logy').checked, t.name);
+  const draw = async () => {
+    const logy = $('ax-logy').checked;
+    try { tables[logy] = tables[logy] || await fetchTable(root, path, true); }
+    catch (e) { purge('file-plot'); $('file-title').textContent = `${path}: ${e.message}`; return; }
+    plotTable('file-plot', tables[logy], $('ax-x').value, [...$('ax-y').selectedOptions].map((o) => o.value), t.name);
+  };
   ['ax-x', 'ax-y', 'ax-logy'].forEach((id) => { $(id).onchange = draw; });
-  draw();
+  await draw();
   const n = Math.min(t.n_rows, 200);
   $('file-table').innerHTML = `<tr>${t.columns.map((c) => `<th>${c}</th>`).join('')}</tr>`
     + Array.from({ length: n }, (_, i) => `<tr>${t.columns.map((c) => `<td>${escapeHtml(fmt(t.data[c][i]))}</td>`).join('')}</tr>`).join('')
