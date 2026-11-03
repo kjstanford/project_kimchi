@@ -110,14 +110,19 @@ def device_W(cfg, d):
 
 
 class Logger:
-    def __init__(self, path):
+    def __init__(self, path, sink=None):
+        """sink: optional callable(line), also given every line (e.g. the web app's event stream)."""
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        self.path = path
         self.f = open(path, 'a', encoding='utf-8')
+        self.sink = sink
 
     def __call__(self, msg):
         line = f"[{time.strftime('%H:%M:%S')}] {msg}"
         print(line, flush=True)
         self.f.write(line + '\n'); self.f.flush()
+        if self.sink is not None:
+            self.sink(line)
 
     def close(self):
         self.f.close()
@@ -294,8 +299,20 @@ def confirm(prompt):
 
 
 def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, origin=None, data_dir=None,
-        fakes=None, interactive=True, keep_order=False, origin_offset=None):
-    """Returns (summary_rows, bench_or_None). `fakes` = (bench, prober_resource, smu_inst) for tests."""
+        fakes=None, interactive=True, keep_order=False, origin_offset=None,
+        log_sink=None, confirm_fn=None, stop_event=None, on_plan=None, on_row=None):
+    """Returns (summary_rows, bench_or_None). `fakes` = (bench, prober_resource, smu_inst) for tests.
+
+    Hooks for a caller other than the CLI (the web app); all optional, the defaults are the CLI's behaviour:
+    - log_sink(line): also receives every log line
+    - confirm_fn(prompt) -> bool: replaces the typed 'yes' at the live gate and the alignment check
+      (asked only when interactive=True, as before)
+    - stop_event (threading.Event or anything with is_set()): checked before each device; when set the run
+      stops there, through the same cleanup as KeyboardInterrupt (outputs zeroed, probes separated)
+    - on_plan(plan): the planned devices, before any connection
+    - on_row(row): each summary row as it is written
+    """
+    confirm_fn = confirm_fn or confirm
     data_dir = data_dir or cfg['data_dir']
     show = bool(cfg.get('show_plots')) and live
     matplotlib.use('TkAgg' if show else 'Agg', force=True)
@@ -316,7 +333,7 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
                          "and runs the idvg experiment only")
     run_dir = os.path.join(data_dir, cfg['sample']['name']) if multi else die_dir(cfg, data_dir)
     stamp = time.strftime('%Y%m%d_%H%M%S')
-    log = Logger(os.path.join(run_dir, f"run_{stamp}{'' if live else '_dryrun'}.log"))
+    log = Logger(os.path.join(run_dir, f"run_{stamp}{'' if live else '_dryrun'}.log"), sink=log_sink)
     origin_key = dm.parse_keys(origin or cfg['origin_device'])[0]
     tool_name, tool, idvg = smu_tool(cfg)
     log(f"Mode: {'LIVE' if live else 'DRY RUN (fake instruments, no GPIB)'} | SMU tool {tool_name} | "
@@ -332,6 +349,8 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
                                 origin_offset)
         fake_origin = origin_key
     log(f"Planned devices: {len(plan)}")
+    if on_plan is not None:
+        on_plan(plan)
     for i, p in enumerate(plan):
         first = multi and (i == 0 or p['cfg'] is not plan[i - 1]['cfg'])
         if first:
@@ -346,7 +365,7 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
     m = cfg['motion']
     bench = rm = None
     if live:
-        if interactive and not confirm(
+        if interactive and not confirm_fn(
                 f"LIVE RUN on {tool_name}: {exp}"
                 + (f" ({stress_stair.stress_label(stress_stair.params(cfg.get('stress_stair', {})))} stress)"
                    if exp == 'stress_stair' else '')
@@ -412,9 +431,14 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
         def write_row(c, r):
             sf, writer = writers[die_dir(c, data_dir) if multi else run_dir]
             writer.writerow(r); sf.flush()
+            if on_row is not None:
+                on_row(r)
         seg_fails = 0             # open devices in the current segment while none measured; None once one is
         try:
             for i, d in enumerate(plan):
+                if stop_event is not None and stop_event.is_set():
+                    log(f"Stop requested: stopping run before device {i + 1}/{len(plan)}")
+                    break
                 c = d.get('cfg', cfg)
                 if multi and (i == 0 or c is not plan[i - 1]['cfg']):
                     log(f"--- segment {segment_label(c)}")
@@ -429,7 +453,7 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
                         log(f"Long step ({d['dx']:.1f}, {d['dy']:.1f}) um split into {n} hops")
                     for _ in range(n):
                         prober.move_relative(d['dx'] / n, d['dy'] / n)
-                if live and i == 0 and interactive and not confirm("Check alignment at separation height."):
+                if live and i == 0 and interactive and not confirm_fn("Check alignment at separation height."):
                     log("Aborted by user before first contact.")
                     break
                 prober.contact()

@@ -11,3 +11,4 @@ measure/tests/__pycache__
 .claude/
 .archived_prompts/
 PROMPT*
+.venv/
