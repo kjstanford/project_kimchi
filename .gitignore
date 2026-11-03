@@ -12,3 +12,5 @@ measure/tests/__pycache__
 .archived_prompts/
 PROMPT*
 .venv/
+docker/certs/*.crt
+.env

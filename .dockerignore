@@ -1,8 +1,0 @@
-.venv
-.git
-.ignore
-data
-data_k4200
-data_k4200_stress
-layouts/*.gds
-**/__pycache__
