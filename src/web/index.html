@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wafer-Probe Runs</title>
+<link rel="stylesheet" href="/static/styles.css">
+<script src="/vendor/plotly.min.js"></script>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Wafer-probe runs</h1>
+    <p class="lede">Plan, dry-run and run S200 + B1500A / 4200A device maps from a config, and browse what they measured.</p>
+  </div>
+  <span id="mode" class="badge">…</span>
+</header>
+<nav>
+  <button class="tab active" data-tab="run">Run</button>
+  <button class="tab" data-tab="data">Data</button>
+</nav>
+
+<main id="tab-run" class="tab-page">
+  <section class="panel controls">
+    <h2>1 · Config</h2>
+    <label>Config file <select id="cfg-select"></select></label>
+    <details>
+      <summary>Edit JSON (changes apply to this run only, the file is not saved)</summary>
+      <textarea id="cfg-text" spellcheck="false" rows="18"></textarea>
+    </details>
+    <h2>2 · Devices</h2>
+    <div class="grid2">
+      <label>Only <input id="opt-only" placeholder="A:2,B:2 or R42C29R"></label>
+      <label>Columns <input id="opt-columns" placeholder="A,B,C"></label>
+      <label>L (µm) <input id="opt-L" placeholder="2,1,0.5"></label>
+      <label>Limit <input id="opt-limit" type="number" min="1" placeholder="all"></label>
+      <label>Origin device <input id="opt-origin" placeholder="from config"></label>
+      <label>Origin die offset (µm) <input id="opt-offset" placeholder="X,Y"></label>
+    </div>
+    <label class="check"><input id="opt-keep" type="checkbox"> Visit the "Only" devices in the order given</label>
+    <label class="check live"><input id="opt-live" type="checkbox" disabled> <b>Live</b>: real instruments over GPIB</label>
+    <div class="buttons">
+      <button id="btn-preview">Check &amp; preview plan</button>
+      <button id="btn-start" class="primary" disabled>Start dry-run</button>
+      <button id="btn-stop" class="danger" disabled>Stop</button>
+    </div>
+    <ul id="errors" class="errors"></ul>
+  </section>
+
+  <section class="panel">
+    <h2>3 · Plan and progress <span id="run-state" class="state">idle</span></h2>
+    <p id="plan-summary" class="muted">Pick a config and press “Check &amp; preview plan”.</p>
+    <div id="confirm" class="confirm" hidden>
+      <pre id="confirm-prompt"></pre>
+      <label>Type <code id="confirm-expect"></code> to continue <input id="confirm-text" autocomplete="off"></label>
+      <div class="buttons">
+        <button id="btn-confirm" class="danger">Confirm</button>
+        <button id="btn-decline">Decline</button>
+      </div>
+    </div>
+    <div id="map" class="plot"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Latest device</h2>
+    <div id="latest" class="plot"></div>
+  </section>
+
+  <section class="panel wide">
+    <h2>Summary rows</h2>
+    <div class="table-wrap"><table id="rows"></table></div>
+    <h2>Log</h2>
+    <pre id="log" class="log"></pre>
+  </section>
+</main>
+
+<main id="tab-data" class="tab-page" hidden>
+  <section class="panel controls">
+    <h2>Saved data <span class="muted">(read-only)</span></h2>
+    <label>Folder <select id="data-root"></select></label>
+    <div id="crumbs" class="crumbs"></div>
+    <ul id="listing" class="listing"></ul>
+  </section>
+  <section class="panel wide">
+    <h2 id="file-title">No file selected</h2>
+    <div id="axes" class="axes" hidden>
+      <label>x <select id="ax-x"></select></label>
+      <label>y <select id="ax-y" multiple size="4"></select></label>
+      <label class="check"><input id="ax-logy" type="checkbox"> log |y|</label>
+    </div>
+    <div id="file-plot" class="plot"></div>
+    <img id="file-img" alt="" hidden>
+    <pre id="file-text" class="log" hidden></pre>
+    <div class="table-wrap"><table id="file-table"></table></div>
+  </section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

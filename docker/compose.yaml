@@ -1,0 +1,52 @@
+# Every Makefile target runs through this file (docker compose -f docker/compose.yaml).
+# COMPOSE_PROJECT_NAME, HOST_UID and HOST_GID come from the Makefile; PORT from .env (default 8300).
+x-build: &build
+  context: .
+  args:
+    HTTP_PROXY: ${HTTP_PROXY:-}
+    HTTPS_PROXY: ${HTTPS_PROXY:-}
+    NO_PROXY: ${NO_PROXY:-}
+
+services:
+  app:
+    build: { <<: *build, target: final }
+    image: ${COMPOSE_PROJECT_NAME}-app
+    user: "${HOST_UID}:${HOST_GID}"
+    working_dir: /work
+    volumes: ["..:/work"]
+    ports: ["127.0.0.1:${PORT:-8300}:8300"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8300/api/health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  lock-py:
+    profiles: [tools]
+    build: { <<: *build, target: uv }
+    image: ${COMPOSE_PROJECT_NAME}-uv
+    environment: { HTTP_PROXY: "${HTTP_PROXY:-}", HTTPS_PROXY: "${HTTPS_PROXY:-}", NO_PROXY: "${NO_PROXY:-}", HOME: /tmp }
+    user: "${HOST_UID}:${HOST_GID}"
+    working_dir: /lock
+    volumes: [".:/lock"]
+    command: ["uv", "lock"]
+
+  lock-js:
+    profiles: [tools]
+    build: { <<: *build, target: node }
+    image: ${COMPOSE_PROJECT_NAME}-node
+    environment: { HTTP_PROXY: "${HTTP_PROXY:-}", HTTPS_PROXY: "${HTTPS_PROXY:-}", NO_PROXY: "${NO_PROXY:-}", HOME: /tmp }
+    user: "${HOST_UID}:${HOST_GID}"
+    working_dir: /lock
+    volumes: [".:/lock"]
+    command: ["npm", "install", "--package-lock-only", "--no-audit", "--no-fund"]
+
+  e2e:
+    profiles: [e2e]
+    build: { <<: *build, target: e2e }
+    image: ${COMPOSE_PROJECT_NAME}-e2e
+    network_mode: "service:app"
+    working_dir: /work
+    volumes: ["..:/work:ro"]
+    environment: { APP_URL: "http://127.0.0.1:8300/", HOME: /tmp }
+    command: ["node", "tests/e2e.mjs"]

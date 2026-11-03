@@ -1,0 +1,11 @@
+{
+  "name": "wafer-probe-web-frontend",
+  "private": true,
+  "description": "Frontend libraries, installed into the image at build time and served under /vendor/",
+  "dependencies": {
+    "plotly.js-dist-min": "3.7.0"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0"
+  }
+}

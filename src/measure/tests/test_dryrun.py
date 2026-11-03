@@ -1776,10 +1776,9 @@ def test_drift_limit():
     print(f"test_drift_limit OK ({n_fix} correction moves, worst landing {worst:.2f} um)")
 
 
-if __name__ == '__main__':
-    import io, contextlib
-    quiet = io.StringIO()
-    tests = [test_full_map, test_resume, test_fault_cleanup, test_keyboard_interrupt,
+# Every test, in run order: test_full_map returns the config test_resume continues from (used by the pytest wrapper,
+# tests/test_measure_dryrun.py, as well as by the runner below).
+TESTS = [test_full_map, test_resume, test_fault_cleanup, test_keyboard_interrupt,
              test_dead_device_screened, test_limits_and_origin, test_chuck_drift_guard,
              test_fmt21_parse, test_fault_devices_and_compliance, test_igzo_v6_device_id_map,
              test_drift_correction, test_long_move_hops_keep_order, test_multi_segment_run, test_drift_limit,
@@ -1791,8 +1790,13 @@ if __name__ == '__main__':
              test_sarb_rules_and_rate_model,
              test_stress_stair_map, test_stress_stair_ac, test_k4200_stale_reply_and_status,
              test_live_needs_confirmation]
+
+
+if __name__ == '__main__':
+    import io, contextlib
+    quiet = io.StringIO()
     cfg = None
-    for t in tests:
+    for t in TESTS:
         with contextlib.redirect_stdout(quiet):
             out = t(cfg) if t is test_resume else t()
         if t is test_full_map:
