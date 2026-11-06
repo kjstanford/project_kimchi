@@ -60,7 +60,7 @@
       "Vt_max": 2.5,
       "Ig_max": 1e-08,
       "Id_max_min": 1e-07,
-      "Id_max_min_per_WL": 3e-07,
+      "Id_max_min_per_WL": 1e-07,
       "on_off_min": 100,
       "Voff_Id": 2.5e-12,
       "short_Id_min": 1e-05,
