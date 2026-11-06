@@ -36,8 +36,13 @@ the origin die. Data go to each segment's die / Lc folders, one summary per die,
 folder. 'segment_start_max_fails' (optional): stop the run when that many devices at the start of a segment are
 open (max |Id| of the initial scan < 'segment_open_Id_max_A', default 1 nA, and no gate compliance) before any is
 measured (probes probably not on the array); other failures (breakdown, leakage, short) do not count.
+
+Email (live runs only, measure.notify, settings in .env): one email when the run ends (done, stopped, Ctrl+C,
+error, auto-stop) with the counts and the device the probes are above; with config 'alert_after_fails' = N, also
+one alert per streak of N devices in a row that are not measured (the run goes on).
 """
 import argparse
+import collections
 import contextlib
 import csv
 import json
@@ -51,7 +56,7 @@ import numpy as np
 import pandas as pd
 
 from measure import device_map as dm
-from measure import fet_idvg, fet_idvg_k4200, gc_pmu, gc_pmu_ret, gc_screen, gc_sweep
+from measure import fet_idvg, fet_idvg_k4200, gc_pmu, gc_pmu_ret, gc_screen, gc_sweep, notify
 from measure.instruments import b1500 as b1500_mod
 from measure.instruments import k4200 as k4200_mod
 from measure.instruments import prober as prober_mod
@@ -116,11 +121,13 @@ class Logger:
         self.path = path
         self.f = open(path, 'a', encoding='utf-8')
         self.sink = sink
+        self.tail = collections.deque(maxlen=40)   # the latest lines, for the notification emails
 
     def __call__(self, msg):
         line = f"[{time.strftime('%H:%M:%S')}] {msg}"
         print(line, flush=True)
         self.f.write(line + '\n'); self.f.flush()
+        self.tail.append(line)
         if self.sink is not None:
             self.sink(line)
 
@@ -298,9 +305,63 @@ def confirm(prompt):
     return input("Type 'yes' to continue: ").strip().lower() == 'yes'
 
 
+OUTCOMES = {'DONE': 'all planned devices done', 'STOPPED': 'stopped on request (web Stop)',
+            'INTERRUPTED': 'interrupted (Ctrl+C)', 'ERROR': 'stopped on an error',
+            'AUTO-STOPPED': 'stopped: too many open devices at the start of a segment'}
+
+
+def duration(seconds):
+    """'H:MM:SS', hours not wrapped at 24 (a full map takes a day)."""
+    m, s = divmod(int(seconds), 60)
+    return f"{m // 60}:{m % 60:02d}:{s:02d}"
+
+
+def _run_name(cfg, multi):
+    return cfg['sample']['name'] + ('' if multi else f" {cfg['sample']['die_idx']}")
+
+
+def end_email(cfg, multi, outcome, error, rows, n_plan, at, t0, live, summaries, log):
+    """(subject, body) of the email sent when a run ends."""
+    devices = list(dict.fromkeys((r.get('die_idx'), r.get('Lc_nm'), r['key']) for r in rows))
+    ok = {(r.get('die_idx'), r.get('Lc_nm'), r['key']) for r in rows if r.get('status') == 'measured'}
+    counts = collections.Counter(r.get('status') for r in rows)
+    subject = (f"[probe] {_run_name(cfg, multi)}: {outcome}, {len(devices)}/{n_plan} devices "
+               f"({len(ok)} measured)")
+    lines = [f"Outcome: {OUTCOMES.get(outcome, outcome)}"]
+    if error:
+        lines.append(f"Error: {error}")
+    lines += [f"Run: {'LIVE' if live else 'DRY RUN'} {experiment(cfg)} on {smu_tool(cfg)[0]}, sample "
+              f"{_run_name(cfg, multi)}",
+              f"Started {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(t0))}, ended "
+              f"{time.strftime('%Y-%m-%d %H:%M:%S')}, took {duration(time.time() - t0)}",
+              f"Devices: {len(devices)} of {n_plan} planned"]
+    lines += [f"  {s}: {n}" for s, n in counts.items()]
+    if rows:
+        r = rows[-1]
+        lines.append(f"Last device: {r['key']} ({r.get('status')}{': ' + str(r['reason']) if r.get('reason') else ''})")
+    lines.append(f"Probes at separation above {at}" + ('' if multi else f": next --origin {at}"))
+    lines += [f"Summary: {p}" for p in summaries] + [f"Log: {log.path}", '', 'Last log lines:'] + list(log.tail)[-20:]
+    return subject, '\n'.join(lines)
+
+
+def streak_email(cfg, multi, streak, i, n_plan, log):
+    """(subject, body) of the alert after N devices in a row that are not measured."""
+    subject = (f"[probe] {_run_name(cfg, multi)}: {len(streak)} failures in a row, at {streak[-1]['key']} "
+               f"({i + 1}/{n_plan})")
+    lines = [f"The last {len(streak)} devices were not measured:"]
+    lines += [f"  {r['key']}  {r.get('status')}  max Id {r.get('Id_max_A', '')} A  {r.get('reason', '')}"
+              for r in streak]
+    drift = [s for s in log.tail if 'accumulated drift' in s]
+    if drift:
+        lines += ['', 'Latest chuck position:', drift[-1]]
+    lines += ['', "The run goes on. To stop it: Ctrl+C in its terminal (or Stop in the web app).",
+              f"Log: {log.path}"]
+    return subject, '\n'.join(lines)
+
+
 def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, origin=None, data_dir=None,
         fakes=None, interactive=True, keep_order=False, origin_offset=None,
-        log_sink=None, confirm_fn=None, stop_event=None, on_plan=None, on_row=None):
+        log_sink=None, confirm_fn=None, stop_event=None, on_plan=None, on_row=None, notify_fn=None):
     """Returns (summary_rows, bench_or_None). `fakes` = (bench, prober_resource, smu_inst) for tests.
 
     Hooks for a caller other than the CLI (the web app); all optional, the defaults are the CLI's behaviour:
@@ -311,6 +372,9 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
       stops there, through the same cleanup as KeyboardInterrupt (outputs zeroed, probes separated)
     - on_plan(plan): the planned devices, before any connection
     - on_row(row): each summary row as it is written
+    - notify_fn(subject, body): sends the run-end email and the failure-streak alerts. Default: a live run uses
+      measure.notify.from_env() (off when .env has no mail settings), a dry run sends nothing. A failed send is
+      logged and never stops the run.
     """
     confirm_fn = confirm_fn or confirm
     data_dir = data_dir or cfg['data_dir']
@@ -332,7 +396,8 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
         raise ValueError("a 'segments' run takes no --only/--columns/--L/--keep-order/--origin-die-offset "
                          "and runs the idvg experiment only")
     run_dir = os.path.join(data_dir, cfg['sample']['name']) if multi else die_dir(cfg, data_dir)
-    stamp = time.strftime('%Y%m%d_%H%M%S')
+    t0 = time.time()
+    stamp = time.strftime('%Y%m%d_%H%M%S', time.localtime(t0))
     log = Logger(os.path.join(run_dir, f"run_{stamp}{'' if live else '_dryrun'}.log"), sink=log_sink)
     origin_key = dm.parse_keys(origin or cfg['origin_device'])[0]
     tool_name, tool, idvg = smu_tool(cfg)
@@ -379,6 +444,11 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
                 f"({plan[0]['dx']:.1f}, {plan[0]['dy']:.1f}) um."):
             log("Aborted by user before connecting."); log.close()
             return [], None
+        if notify_fn is None:
+            mailer = notify.from_env()
+            notify_fn = mailer.send if mailer else None
+            log(f"Email notifications on: {mailer.describe()}" if mailer else
+                f"Email notifications off ({', '.join(notify.missing())} not set in .env)")
         rm, res = prober_mod.connect(cfg['instruments']['prober_resource'])
         try:
             smu_inst = tool.connect(cfg['instruments'][f'{tool_name}_resource'], log=log, **cfg.get(tool_name, {}))
@@ -419,6 +489,20 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
     summary_dirs = list(dict.fromkeys(die_dir(p['cfg'], data_dir) for p in plan)) if multi else [run_dir]
     max_fails = cfg.get('segment_start_max_fails') if multi else None
     open_Id_max = cfg.get('segment_open_Id_max_A', 1e-9)
+    alert_n = cfg.get('alert_after_fails')
+
+    def send(subject, body):
+        if notify_fn is None:
+            return
+        try:
+            notify_fn(subject, body)
+            log(f"Email sent: {subject}")
+        except Exception as e:
+            log(f"Email notification failed: {type(e).__name__}: {e}")
+
+    outcome = error = None
+    at = origin_key           # device the probes are above (the next --origin)
+    streak = []               # rows of the devices in a row that were not measured
     rows = []
     with contextlib.ExitStack() as stack:
         writers = {}              # die folder -> (file, csv writer)
@@ -438,6 +522,7 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
             for i, d in enumerate(plan):
                 if stop_event is not None and stop_event.is_set():
                     log(f"Stop requested: stopping run before device {i + 1}/{len(plan)}")
+                    outcome = 'STOPPED'
                     break
                 c = d.get('cfg', cfg)
                 if multi and (i == 0 or c is not plan[i - 1]['cfg']):
@@ -453,8 +538,10 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
                         log(f"Long step ({d['dx']:.1f}, {d['dy']:.1f}) um split into {n} hops")
                     for _ in range(n):
                         prober.move_relative(d['dx'] / n, d['dy'] / n)
+                at = f"{segment_label(c)} {d['key']}" if multi else d['key']
                 if live and i == 0 and interactive and not confirm_fn("Check alignment at separation height."):
                     log("Aborted by user before first contact.")
+                    outcome = 'ABORTED'
                     break
                 prober.contact()
                 W = device_W(cfg, d)
@@ -489,6 +576,12 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
                     log(f"{d['key']}: {r['status']} {r.get('reason', '')}"
                         + (f"({r['Irange_A']:g} A range)" if r.get('Irange_A') else '')
                         + (f" | flags: {r['flags']}" if r.get('flags') else ''))
+                if any(part.get('status', row.get('status')) == 'measured' for part in parts):
+                    streak = []
+                else:
+                    streak.append({**row, **parts[-1]})
+                    if alert_n and len(streak) == alert_n:
+                        send(*streak_email(cfg, multi, streak, i, len(plan), log))
                 if seg_fails is not None:
                     if row.get('status') == 'measured':
                         seg_fails = None
@@ -499,11 +592,15 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
                         log(f"STOPPING: {seg_fails} devices at the start of {segment_label(c)} were open (max Id < "
                             f"{open_Id_max:g} A) and none measured; the probes are probably not on the array. "
                             f"Check the landing before resuming.")
+                        outcome = 'AUTO-STOPPED'
                         break
+            outcome = outcome or 'DONE'
         except KeyboardInterrupt:
+            outcome = 'INTERRUPTED'
             log("KeyboardInterrupt: stopping run")
         except Exception as e:
-            log(f"ERROR, stopping run: {type(e).__name__}: {e}")
+            outcome, error = 'ERROR', f"{type(e).__name__}: {e}"
+            log(f"ERROR, stopping run: {error}")
             raise
         finally:
             for name, fn in (('zero outputs', lambda: tool.zero_outputs(smu_inst)),
@@ -522,8 +619,11 @@ def run(cfg, live=False, only=None, columns=None, L_values=None, limit=None, ori
                     tool.close(smu_inst)
                 except Exception:
                     pass
-            for folder in summary_dirs:
-                log(f"Summary: {os.path.join(folder, summary_name)}")
+            summaries = [os.path.join(folder, summary_name) for folder in summary_dirs]
+            for p in summaries:
+                log(f"Summary: {p}")
+            if outcome not in (None, 'ABORTED'):
+                send(*end_email(cfg, multi, outcome, error, rows, len(plan), at, t0, live, summaries, log))
             log.close()
     return rows, bench
 

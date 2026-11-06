@@ -9,6 +9,7 @@
   "first_row": "right",
   "start_row": "bottom",
   "repeat_measurement": false,
+  "alert_after_fails": 5,
   "show_plots": false,
   "smu_map": {
     "gate": "smu4",

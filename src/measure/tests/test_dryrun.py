@@ -1692,6 +1692,149 @@ def test_live_needs_confirmation(monkey_input='no'):
     print("test_live_needs_confirmation OK (declined before any connection)")
 
 
+def trigger_interrupt(b, at):
+    """Make the fake SMU raise KeyboardInterrupt (Ctrl+C) on its at-th trigger (5 triggers per device)."""
+    orig, n = b.send_trigger, [0]
+
+    def trig():
+        n[0] += 1
+        if n[0] == at:
+            raise KeyboardInterrupt
+        orig()
+    b.send_trigger = trig
+
+
+def test_notify_run_end():
+    """One email at every end of a run (done, Ctrl+C, error) with the outcome, the counts and the next
+    --origin; a failing sender never breaks the run; a dry run without notify_fn never builds a mailer."""
+    from measure import notify
+    sent, lines = [], []
+
+    def cap(subject, body):
+        sent.append((subject, body))
+
+    cfg = fresh()
+    rows, bench = run_map.run(cfg, data_dir=DATA, only='A:2,B:2,C:2', notify_fn=cap)
+    assert len(rows) == 3 and len(sent) == 1, sent
+    subj, body = sent[0]
+    assert 'DONE' in subj and '3/3 devices' in subj and '3 measured' in subj, subj
+    assert 'next --origin C:2' in body and 'measured: 3' in body and 'took 0:00:' in body, body
+    assert run_map.duration(90061) == '25:01:01'      # a day-long map: hours do not wrap at 24
+
+    # Ctrl+C on device 2: the probes are above B:2
+    cfg, sent[:] = fresh(), []
+    full = dm.load_devices(cfg['device_csv'])
+    bench, res, b = run_map.make_fake_instruments(cfg, full, 'A:2')
+    trigger_interrupt(b, 6)
+    rows, _ = run_map.run(cfg, data_dir=DATA, fakes=(bench, res, b), only='A:2,B:2,C:2', notify_fn=cap)
+    assert len(rows) == 1 and len(sent) == 1, sent
+    assert 'INTERRUPTED' in sent[0][0] and '1/3 devices' in sent[0][0], sent[0][0]
+    assert 'next --origin B:2' in sent[0][1], sent[0][1]
+
+    # an instrument error on device 2: an ERROR email, and the exception still reaches the caller
+    cfg, sent[:] = fresh(), []
+    fakes = run_map.make_fake_instruments(cfg, full, 'A:2', fail_on_trigger=7)
+    try:
+        run_map.run(cfg, data_dir=DATA, fakes=fakes, only='A:2,B:2,C:2', notify_fn=cap)
+        raise AssertionError("expected OSError")
+    except OSError:
+        pass
+    assert len(sent) == 1 and 'ERROR' in sent[0][0] and 'OSError' in sent[0][1], sent
+
+    # a sender that fails: logged, the run and its cleanup unaffected
+    def broken(subject, body):
+        raise RuntimeError('smtp down')
+    cfg = fresh()
+    fakes = run_map.make_fake_instruments(cfg, full, 'A:2')
+    rows, bench = run_map.run(cfg, data_dir=DATA, fakes=fakes, only='A:2,B:2', notify_fn=broken,
+                              log_sink=lines.append)
+    assert len(rows) == 2 and not bench.in_contact and not bench.bias_live
+    assert any('Email notification failed: RuntimeError: smtp down' in s for s in lines), lines[-5:]
+
+    # a dry run without notify_fn sends nothing and never reads the mail settings
+    def no_mail(*a, **k):
+        raise AssertionError("a dry run built a mailer")
+    orig, notify.from_env = notify.from_env, no_mail
+    try:
+        rows, _ = run_map.run(fresh(), data_dir=DATA, only='A:2')
+    finally:
+        notify.from_env = orig
+    assert len(rows) == 1
+    print("test_notify_run_end OK")
+
+
+def test_notify_fail_streak():
+    """alert_after_fails = 3: one alert per streak of 3+ failed / screened-out devices; the run goes on."""
+    sent = []
+    cfg = fresh()
+    cfg['alert_after_fails'] = 3
+    full = dm.load_devices(cfg['device_csv'])
+    dead = {'B:2', 'C:2', 'D:2', 'E:2', 'G:2', 'H:2', 'I:2'}
+    fakes = run_map.make_fake_instruments(cfg, full, 'A:2', dead=dead)
+    rows, _ = run_map.run(cfg, data_dir=DATA, fakes=fakes, only=','.join(f"{c}:2" for c in 'ABCDEFGHIJ'),
+                          notify_fn=lambda s, b: sent.append((s, b)))
+    st = {r['key']: r['status'] for r in rows}
+    assert all(st[k] == 'screened_out' for k in dead) and st['F:2'] == st['J:2'] == 'measured', st
+    alerts = [m for m in sent if 'in a row' in m[0]]
+    assert len(alerts) == 2, [m[0] for m in sent]
+    assert all(k in alerts[0][1] for k in ('B:2', 'C:2', 'D:2')) and 'E:2' not in alerts[0][1], alerts[0][1]
+    assert all(k in alerts[1][1] for k in ('G:2', 'H:2', 'I:2')), alerts[1][1]
+    assert 'DONE' in sent[-1][0] and len(sent) == 3, [m[0] for m in sent]
+    print("test_notify_fail_streak OK")
+
+
+def test_notify_smtp():
+    """The Gmail mailer: STARTTLS, login, headers; off when a setting is missing; the password in no log."""
+    import smtplib
+    from measure import notify
+    pw = 'pw-secret-123'
+    env = {'NOTIFY_SMTP_USER': 'lab@gmail.com', 'NOTIFY_SMTP_PASSWORD': pw, 'NOTIFY_EMAIL_TO': 'a@x.edu, b@y.edu'}
+    for k in env:
+        assert notify.from_env({kk: v for kk, v in env.items() if kk != k}) is None, k
+    calls = []
+
+    class FakeSMTP:
+        refuse = False
+
+        def __init__(self, host, port, timeout):
+            calls.append(('connect', host, port, timeout))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            calls.append(('quit',))
+
+        def starttls(self, context=None):
+            calls.append(('starttls', context is not None))
+
+        def login(self, user, password):
+            if FakeSMTP.refuse:
+                raise smtplib.SMTPAuthenticationError(535, b'5.7.8 Username and Password not accepted')
+            calls.append(('login', user, password))
+
+        def send_message(self, msg):
+            calls.append(('send', msg['From'], msg['To'], msg['Subject'], msg.get_content()))
+
+    orig, notify.smtplib.SMTP = notify.smtplib.SMTP, FakeSMTP
+    lines = []
+    try:
+        m = notify.from_env(env)
+        m.send('subj', 'body text')
+        FakeSMTP.refuse = True
+        run_map.run(fresh(), data_dir=DATA, only='A:2', notify_fn=m.send, log_sink=lines.append)
+    finally:
+        notify.smtplib.SMTP = orig
+    assert calls[0] == ('connect', 'smtp.gmail.com', 587, 30), calls
+    assert ('starttls', True) in calls and ('login', 'lab@gmail.com', pw) in calls, calls
+    send = [c for c in calls if c[0] == 'send']
+    assert len(send) == 1 and send[0][1:4] == ('lab@gmail.com', 'a@x.edu, b@y.edu', 'subj'), send
+    assert 'body text' in send[0][4]
+    assert any('Email notification failed: SMTPAuthenticationError' in s for s in lines), lines[-3:]
+    assert not any(pw in s for s in lines) and pw not in m.describe() and pw not in repr(m)
+    print("test_notify_smtp OK")
+
+
 def multi_cfg(drift_correct_um=2.0, drift_limit_um=3.0):
     """The unknown_2 six-array config cut to two short arrays (L = 2 and 1 only): bottom-left Lc100 and
     top-left Lc80 (the die 8000 um above), probes starting on L:0.04 of bottom-left Lc500."""
@@ -1789,7 +1932,7 @@ TESTS = [test_full_map, test_resume, test_fault_cleanup, test_keyboard_interrupt
              test_k4200_rpm_cmd_pmu,
              test_sarb_rules_and_rate_model,
              test_stress_stair_map, test_stress_stair_ac, test_k4200_stale_reply_and_status,
-             test_live_needs_confirmation]
+             test_live_needs_confirmation, test_notify_run_end, test_notify_fail_streak, test_notify_smtp]
 
 
 if __name__ == '__main__':
