@@ -61,6 +61,31 @@ Stop or Decline at either ends the run before any contact. A live run writes to 
 
 The CLI still works: `make run-cli PY="$E/python.exe" ARGS="--config configs/lc500_idvg.json --live --limit 2"`.
 
+### Email notifications
+
+A live run, from the CLI or the browser, can email you:
+
+- **When it ends**, whether it finished, was stopped, was interrupted with Ctrl+C, hit an error, or stopped itself.
+  The subject gives the outcome and the device count. The body has the counts by status, the device the probes
+  are above (the next `--origin`) and the last log lines.
+- **Mid-run, when devices keep failing.** With `"alert_after_fails": N` in the config, you get one alert per run of
+  N devices in a row that were not measured. The run keeps going.
+
+Dry runs never send email. To set it up once, on the lab PC:
+
+1. Create a Google app password for the sending Gmail account: Google Account > Security > 2-Step Verification >
+   App passwords.
+2. Fill in `NOTIFY_SMTP_USER`, `NOTIFY_SMTP_PASSWORD` (the app password, no spaces) and `NOTIFY_EMAIL_TO` in `.env`.
+   See `.env.example`.
+3. Send a test email:
+
+```bash
+make notify-test PY="$E/python.exe"
+```
+
+A run logs whether email is on, and every email it sends or fails to send. A failed send never stops a run. No email
+is sent if the process dies: a closed terminal window, a power cut, or a killed process.
+
 ## What its results are fit for
 
 The app computes nothing new about the devices: Vt, on/off and the screening flags are those of
@@ -70,7 +95,7 @@ device.
 
 ## Checks
 
-`make verify` is the gate (lint, 64 tests, smoke, about 6 min). None of the tests can reach an instrument: every
+`make verify` is the gate (lint, 67 tests, smoke, about 6 min). None of the tests can reach an instrument: every
 `connect()` is replaced by a failure.
 
 - Differential, with the CLI as answer key: the web plan equals `run_map.build_plan` (order, count, summed
@@ -79,7 +104,9 @@ device.
 - Safety: live refused without `--allow-live` or off localhost; a gate accepts only the right typed text; Stop at
   a gate answers no; a declined live gate never connects; Stop mid-run separates the probes; an open device is
   reported, not fatal.
-- The measurement package's own 34 dry-run tests, in Python 3.14.
+- The measurement package's own 37 dry-run tests, in Python 3.14. These include the notification emails: their
+  content at each kind of run end, one alert per failure streak, a failing sender that leaves the run alone, and
+  the password never appearing in a log.
 - `make e2e`: a user in Chromium previews and dry-runs 3 devices and sees 3 rows, 3 green devices and the curve.
 
 ## Where the backend/frontend boundary is

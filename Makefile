@@ -14,7 +14,7 @@ PORT ?= 8300
 PY ?= python
 
 .DEFAULT_GOAL := help
-.PHONY: help build up down verify clean test lint fmt smoke e2e logs shell lock up-live run-cli
+.PHONY: help build up down verify clean test lint fmt smoke e2e logs shell lock up-live run-cli notify-test
 
 help: ## list the targets
 	@awk 'BEGIN {FS = ":.*## "} /^##@/ {printf "\n%s\n", substr($$0, 5)} /^[a-z0-9-]+:.*## / {printf "  %-10s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -69,7 +69,10 @@ lock: ## record exact versions in docker/uv.lock and docker/package-lock.json (c
 
 ##@ Lab PC only (native, in the qcodes env: the only way to reach GPIB)
 up-live: ## the app with LIVE runs allowed, on 127.0.0.1 (make up-live PY=".../envs/qcodes/python.exe")
-	PYTHONPATH=src $(PY) -B -m app --allow-live --port $(PORT)
+	PYTHONPATH=src "$(PY)" -B -m app --allow-live --port $(PORT)
 
 run-cli: ## the measurement CLI, e.g. make run-cli PY=... ARGS="--config configs/lc500_idvg.json --limit 2"
-	PYTHONPATH=src $(PY) -B -m measure.run_map $(ARGS)
+	PYTHONPATH=src "$(PY)" -B -m measure.run_map $(ARGS)
+
+notify-test: ## send one test email with the NOTIFY_* settings in .env (live runs email when they end)
+	PYTHONPATH=src "$(PY)" -B -m measure.notify --test

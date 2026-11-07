@@ -8,11 +8,13 @@ are in `docs/`, one short file each; the departures from the course specificatio
 
 - `src/measure/`: the measurement package (S200 chuck control, B1500A and 4200A drivers, the experiments, fake
   instruments for dry-runs) and its CLI, `measure.run_map`. Its dry-run suite runs under pytest.
+  `measure.notify` emails the end of each live run, and failure streaks, over SMTP, with its settings in `.env`
+  (docs/0004-email-notifications.md).
 - `src/app/` and `src/web/`: the web app. Check a config, preview its probe plan on the stage map, dry-run it on
   the fake instruments (or, on the lab PC only, run it live behind two typed confirmations), follow the run
   live, and browse saved data as interactive plots.
 - `docker/`, `Makefile`: the development container and every command, as specified below. `make verify` is green
-  (lint, 64 tests, smoke); `make e2e` drives the page in Chromium.
+  (lint, 67 tests, smoke); `make e2e` drives the page in Chromium.
 - Not built yet: an analysis page (Vt roll-off, TLM Rc·W from `measure.anneal_series`) and default plot axes for
   the gain-cell PMU and stress-staircase files.
 
@@ -94,7 +96,8 @@ Makefile  README.md  ARCHITECTURE.md  AGENTS.md  CLAUDE.md
 - Only when dependencies change: `lock` records exact versions in `docker/uv.lock` and
   `docker/package-lock.json`. `build` uses only the locks, and says so, with this instruction, when a manifest
   and its lock disagree.
-- Lab PC only: `up-live` and `run-cli`, native, with `PY` the `qcodes` env's python.
+- Lab PC only: `up-live`, `run-cli` and `notify-test` (one test email from the `.env` settings), native, with `PY`
+  the `qcodes` env's python (quoted in the recipes, so a path with spaces works).
 
 Every container target runs through compose (`docker compose -f docker/compose.yaml`).
 
