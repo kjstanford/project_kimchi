@@ -94,7 +94,7 @@ lines and one colour per channel length whatever the width. It reads `data/` and
 (`.pptx_figs/` is gitignored).
 
 ```bash
-make plot-idvg ARGS="--sample wd_bobafet_6802 --out .pptx_figs/wd_bobafet"   # --die 0_0 --vd 0.05 --alpha 0.15
+make plot-idvg ARGS="--sample wd_bobafet_6802 --out .pptx_figs/wd_bobafet"   # --die 0_0 --vd 0.05 --alpha 0.15 --font-scale 2
 ```
 
 ## What its results are fit for

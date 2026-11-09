@@ -61,10 +61,17 @@ def colours_by_L(L: pd.Series) -> dict[float, str]:
     return dict(zip(lengths, PALETTE))
 
 
-def plot(curves: pd.DataFrame, out: Path, title: str, alpha: float = 0.15) -> Path:
-    """Draws one translucent line per device and cycle, coloured by L, and saves the figure to out."""
+def plot(curves: pd.DataFrame, out: Path, title: str, alpha: float = 0.15, font_scale: float = 2.0) -> Path:
+    """Draws one translucent line per device and cycle, coloured by L, and saves the figure to out.
+
+    font_scale multiplies matplotlib's default 10 pt font (title, labels, ticks, legend)."""
     if curves.empty:
         raise ValueError("no IdVg_main rows to plot")
+    with plt.rc_context({'font.size': 10 * font_scale}):
+        return _draw(curves, Path(out), title, alpha)
+
+
+def _draw(curves: pd.DataFrame, out: Path, title: str, alpha: float) -> Path:
     colours = colours_by_L(curves['L'])
     fig, ax = plt.subplots(figsize=(8, 6))
     handles = []
@@ -75,7 +82,7 @@ def plot(curves: pd.DataFrame, out: Path, title: str, alpha: float = 0.15) -> Pa
             ax.semilogy(c['Gate_Voltage'].to_numpy(), np.where(y > 0, y, np.nan), color=colour, alpha=alpha,
                         linewidth=1)
         handles.append(Line2D([], [], color=colour, linewidth=2,
-                              label=f"L = {L:g} µm ({sub['device'].nunique()} devices)"))
+                              label=f"L = {L:g} µm ({sub['device'].nunique()})"))
     ax.set_xlabel('$V_G$ (V)')
     ax.set_ylabel('$|I_D| \\cdot L/W$ (A)')
     ax.set_title(title)
@@ -98,10 +105,13 @@ def main(argv: list[str] | None = None) -> Path:
     ap.add_argument('--data-dir', default='data')
     ap.add_argument('--vd', type=float, default=0.05, help='drain voltage of the curves to draw (V)')
     ap.add_argument('--alpha', type=float, default=0.15, help='line opacity, 0-1')
+    ap.add_argument('--font-scale', type=float, default=2.0, help="times matplotlib's default 10 pt font")
     ap.add_argument('--out', default='.pptx_figs', help='output folder (never under data/)')
     a = ap.parse_args(argv)
     if not 0 < a.alpha <= 1:
         ap.error('--alpha must be in (0, 1]')
+    if not 0 < a.font_scale <= 5:
+        ap.error('--font-scale must be in (0, 5]')
     die_dir = Path(a.data_dir) / a.sample / a.die
     if not die_dir.is_dir():
         ap.error(f'no such folder: {die_dir}')
@@ -110,8 +120,9 @@ def main(argv: list[str] | None = None) -> Path:
         ap.error('--out must not be inside a data folder')
     curves = load_curves(die_dir, a.vd)
     n = curves['device'].nunique()
-    title = f"{a.sample} {a.die}: newest main sweep per device, $V_D$ = {a.vd:g} V, {n} devices"
-    path = plot(curves, out_dir / f"{a.sample}_{a.die}_IdVg_main_all_Vd{a.vd:g}.png", title, a.alpha)
+    title = f"{a.sample} {a.die}, $V_D$ = {a.vd:g} V"
+    path = plot(curves, out_dir / f"{a.sample}_{a.die}_IdVg_main_all_Vd{a.vd:g}.png", title, a.alpha,
+                a.font_scale)
     print(f"{n} devices -> {path}")
     return path
 
