@@ -9,9 +9,13 @@ Per device: the newest IdVg_main file (measure.plot_idvg_all.newest_main_files),
   Cox = eps0 * k / t_ox, default 10 nm HfO2 with k = 17 (1.51 uF/cm^2).
 - SS: the steepest dVg/dlog10(Id), from a line fit over 3 consecutive points, between Id = 10 pA (above the noise
   floor) and the VT current.
+- VTR = VT,on - VT,off with --tr-funs's extract_VTR (K. Jana et al., Eqs. 6-9), raw-Id method
+  (correct_series_R=False): VT,on from the linear extrapolation of Id at max gm (minus eta_SS*Vd/2), VT,off from the
+  log10(Id) extrapolation at min SS to I_D0; points below --id-limit are not SS-minimum candidates.
 Writes metrics.csv and one PNG per metric to --out; nothing under data/ is written.
 """
 import argparse
+import importlib.util
 from pathlib import Path
 
 import matplotlib
@@ -27,7 +31,25 @@ from measure.plot_idvg_all import PALETTE, newest_main_files
 EPS0 = 8.8541878128e-12   # F/m
 VT_ID_PER_WL = 1e-7
 SS_ID_MIN = 1e-11
-METRICS = {'VT_V': '$V_T$ (V)', 'muFE_cm2Vs': r'$\mu_{FE}$ (cm$^2$/V·s)', 'SS_mVdec': 'SS (mV/dec)'}
+METRICS = {'VT_V': '$V_T$ (V)', 'muFE_cm2Vs': r'$\mu_{FE}$ (cm$^2$/V·s)', 'SS_mVdec': 'SS (mV/dec)',
+           'VTR_V': '$V_{TR}$ (V)'}
+
+
+def load_tr_funs(path: Path):
+    """Imports the V_TR extraction module from a file path (it lives outside the package)."""
+    spec = importlib.util.spec_from_file_location('tr_funs', path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def vtr_metrics(tr, vg: np.ndarray, Id: np.ndarray, vd: float, id_limit: float) -> dict:
+    """VT,on, VT,off and VTR (V) from tr.extract_VTR, raw-Id method; NaN when the extraction fails."""
+    try:
+        on, off, vtr = tr.extract_VTR(vg, np.abs(Id), vd, ID_limit=id_limit, correct_series_R=False)
+    except (ValueError, IndexError, np.linalg.LinAlgError):
+        on = off = vtr = np.nan
+    return {'VTon_V': float(on), 'VToff_V': float(off), 'VTR_V': float(vtr)}
 
 
 def device_metrics(vg: np.ndarray, Id: np.ndarray, W: float, L: float, vd: float, cox: float) -> dict:
@@ -51,7 +73,8 @@ def device_metrics(vg: np.ndarray, Id: np.ndarray, W: float, L: float, vd: float
     return out
 
 
-def collect(data_dir: Path, samples: list[str], die: str, vd: float, cox: float, exclude_L: list[float]) -> pd.DataFrame:
+def collect(data_dir: Path, samples: list[str], die: str, vd: float, cox: float, exclude_L: list[float],
+            tr=None, id_limit: float = 1e-11) -> pd.DataFrame:
     rows = []
     for s in samples:
         for dev, path, W, L in newest_main_files(Path(data_dir) / s / die):
@@ -64,7 +87,8 @@ def collect(data_dir: Path, samples: list[str], die: str, vd: float, cox: float,
             f = {k: v['f'] for k, v in (('vg', get_sweeps(d['Gate_Voltage'].to_numpy())),
                                         ('id', get_sweeps(d['Drain_Current'].to_numpy())))}
             rows.append({'sample': s, 'device': dev, 'W': W, 'L': L, 'file': path.name,
-                         **device_metrics(f['vg'], f['id'], W, L, vd, cox)})
+                         **device_metrics(f['vg'], f['id'], W, L, vd, cox),
+                         **(vtr_metrics(tr, f['vg'], f['id'], vd, id_limit) if tr else {})})
     return pd.DataFrame(rows)
 
 
@@ -115,18 +139,26 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument('--k', type=float, default=17.0)
     ap.add_argument('--font-scale', type=float, default=2.0)
     ap.add_argument('--out', default='.pptx_figs')
+    ap.add_argument('--tr-funs', default='.pptx_figs/new_TR_extraction_funs.py',
+                    help='file with extract_VTR; VTR is skipped if it is missing')
+    ap.add_argument('--id-limit', type=float, default=1e-11, help='lowest Id (A) for the SS-minimum search of VT,off')
     a = ap.parse_args(argv)
     out = Path(a.out)
     if any(out.resolve().is_relative_to(Path(d).resolve()) for d in ('data', 'data_k4200', 'data_k4200_stress')):
         ap.error('--out must not be inside a data folder')
     cox = EPS0 * a.k / (a.tox_nm * 1e-9)
     print(f"Cox = {cox * 1e2:.3g} uF/cm^2 ({a.tox_nm:g} nm, k = {a.k:g})")
-    df = collect(Path(a.data_dir), a.samples, a.die, a.vd, cox, a.exclude_L)
+    tr = load_tr_funs(Path(a.tr_funs)) if Path(a.tr_funs).is_file() else None
+    if tr is None:
+        print(f"no {a.tr_funs}: VTR skipped")
+    df = collect(Path(a.data_dir), a.samples, a.die, a.vd, cox, a.exclude_L, tr, a.id_limit)
     out.mkdir(parents=True, exist_ok=True)
     tag = '_'.join(s.replace('wd_bobafet_', '') for s in a.samples)
     df.to_csv(out / f'metrics_{tag}_{a.die}_Vd{a.vd:g}.csv', index=False)
-    print(df.groupby(['sample', 'L'])[list(METRICS)].agg(['median', 'count']).round(3).to_string())
-    for m in METRICS:
+    metrics = [m for m in METRICS if m in df]
+    cols = metrics + [c for c in ('VTon_V', 'VToff_V') if c in df]
+    print(df.groupby(['sample', 'L'])[cols].agg(['median', 'count']).round(3).to_string())
+    for m in metrics:
         print(box(df, m, out / f'box_{m}_{tag}_{a.die}_Vd{a.vd:g}.png', a.font_scale))
 
 
