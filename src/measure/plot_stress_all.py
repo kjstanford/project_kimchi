@@ -121,6 +121,7 @@ def main(argv: list[str] | None = None) -> Path:
     ap.add_argument('--sample', default='wd_bobafet_6916')
     ap.add_argument('--die', default='0_0')
     ap.add_argument('--font-scale', type=float, default=2.0)
+    ap.add_argument('--include-repeats', action='store_true', help='also draw runs on pre-stressed devices, grey')
     ap.add_argument('--out', default='.pptx_figs')
     a = ap.parse_args(argv)
     out = Path(a.out)
@@ -130,6 +131,8 @@ def main(argv: list[str] | None = None) -> Path:
     for r in runs:
         print(f"{r['device']} W{r['W']:g}/L{r['L']:g} {r['mode']:<24} {'REPEAT' if r['repeat'] else 'fresh '} "
               f"{r['started']}  {r['file']}")
+    if not a.include_repeats:
+        runs = [r for r in runs if not r['repeat']]
     path = plot(runs, out / f'{a.sample}_{a.die}_stress_dVt_all.png', f'{a.sample} {a.die}: PMU stress, dVt',
                 a.font_scale)
     print(path)
