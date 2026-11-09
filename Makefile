@@ -14,7 +14,7 @@ PORT ?= 8300
 PY ?= python
 
 .DEFAULT_GOAL := help
-.PHONY: help build up down verify clean test lint fmt smoke e2e logs shell lock up-live run-cli notify-test
+.PHONY: help build up down verify clean test lint fmt smoke e2e logs shell lock up-live run-cli notify-test plot-idvg
 
 help: ## list the targets
 	@awk 'BEGIN {FS = ":.*## "} /^##@/ {printf "\n%s\n", substr($$0, 5)} /^[a-z0-9-]+:.*## / {printf "  %-10s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -58,6 +58,9 @@ e2e: ## a user in Chromium previews and dry-runs 3 devices
 
 logs: ## follow the app's output
 	$(COMPOSE) logs -f app
+
+plot-idvg: ## every device's Id-Vg on one figure, |Id|*L/W coloured by L, e.g. ARGS="--sample wd_bobafet_6802 --out .pptx_figs/wd_bobafet"
+	$(RUN) python -B -m measure.plot_idvg_all $(ARGS)
 
 shell: ## a shell inside the container
 	$(COMPOSE) run --rm --no-deps app bash

@@ -86,6 +86,17 @@ make notify-test PY="$E/python.exe"
 A run logs whether email is on, and every email it sends or fails to send. A failed send never stops a run. No email
 is sent if the process dies: a closed terminal window, a power cut, or a killed process.
 
+## Plots from saved data
+
+`make plot-idvg` draws every device of one die on one figure: the newest main sweep of each device (initial scans
+are not used, so screened-out devices are absent), at one drain voltage, as |Id|·L/W against Vg, with translucent
+lines and one colour per channel length whatever the width. It reads `data/` and writes only to `--out`
+(`.pptx_figs/` is gitignored).
+
+```bash
+make plot-idvg ARGS="--sample wd_bobafet_6802 --out .pptx_figs/wd_bobafet"   # --die 0_0 --vd 0.05 --alpha 0.15
+```
+
 ## What its results are fit for
 
 The app computes nothing new about the devices: Vt, on/off and the screening flags are those of
@@ -95,7 +106,7 @@ device.
 
 ## Checks
 
-`make verify` is the gate (lint, 67 tests, smoke, about 6 min). None of the tests can reach an instrument: every
+`make verify` is the gate (lint, 70 tests, smoke, about 6 min). None of the tests can reach an instrument: every
 `connect()` is replaced by a failure.
 
 - Differential, with the CLI as answer key: the web plan equals `run_map.build_plan` (order, count, summed
@@ -107,6 +118,8 @@ device.
 - The measurement package's own 37 dry-run tests, in Python 3.14. These include the notification emails: their
   content at each kind of run end, one alert per failure streak, a failing sender that leaves the run alone, and
   the password never appearing in a log.
+- `measure.plot_idvg_all` on a synthetic die: only the newest main sweep per device, only the chosen Vd, |Id|·L/W
+  by hand, one colour per L.
 - `make e2e`: a user in Chromium previews and dry-runs 3 devices and sees 3 rows, 3 green devices and the curve.
 
 ## Where the backend/frontend boundary is
