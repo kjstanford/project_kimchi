@@ -14,7 +14,7 @@ PORT ?= 8300
 PY ?= python
 
 .DEFAULT_GOAL := help
-.PHONY: help build up down verify clean test lint fmt smoke e2e logs shell lock up-live run-cli notify-test plot-idvg
+.PHONY: help build up down verify clean test lint fmt smoke e2e logs shell lock up-live run-cli notify-test plot-idvg box-idvg
 
 help: ## list the targets
 	@awk 'BEGIN {FS = ":.*## "} /^##@/ {printf "\n%s\n", substr($$0, 5)} /^[a-z0-9-]+:.*## / {printf "  %-10s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -61,6 +61,9 @@ logs: ## follow the app's output
 
 plot-idvg: ## every device's Id-Vg on one figure, |Id|*L/W coloured by L, e.g. ARGS="--sample wd_bobafet_6802 --out .pptx_figs/wd_bobafet"
 	$(RUN) python -B -m measure.plot_idvg_all $(ARGS)
+
+box-idvg: ## box plots of VT, muFE, SS per L, e.g. ARGS="--samples wd_bobafet_6802 wd_bobafet_6916 --out .pptx_figs/wd_bobafet"
+	$(RUN) python -B -m measure.idvg_metrics_box $(ARGS)
 
 shell: ## a shell inside the container
 	$(COMPOSE) run --rm --no-deps app bash
