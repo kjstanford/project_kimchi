@@ -1,4 +1,4 @@
-"""Box plots of VT, field-effect mobility and subthreshold swing per channel length, offline from saved data.
+"""Box plots of VT, field-effect mobility, subthreshold swing and VTR per channel length, offline from saved data.
 
     python -m measure.idvg_metrics_box --samples wd_bobafet_6802 wd_bobafet_6916 [--die 0_0] [--exclude-L 10]
                                        [--out .pptx_figs/wd_bobafet]
@@ -9,13 +9,12 @@ Per device: the newest IdVg_main file (measure.plot_idvg_all.newest_main_files),
   Cox = eps0 * k / t_ox, default 10 nm HfO2 with k = 17 (1.51 uF/cm^2).
 - SS: the steepest dVg/dlog10(Id), from a line fit over 3 consecutive points, between Id = 10 pA (above the noise
   floor) and the VT current.
-- VTR = VT,on - VT,off with --tr-funs's extract_VTR (K. Jana et al., Eqs. 6-9), raw-Id method
+- VTR = VT,on - VT,off with measure.tr_extraction.extract_VTR (K. Jana et al., Eqs. 6-9), raw-Id method
   (correct_series_R=False): VT,on from the linear extrapolation of Id at max gm (minus eta_SS*Vd/2), VT,off from the
   log10(Id) extrapolation at min SS to I_D0; points below --id-limit are not SS-minimum candidates.
 Writes metrics.csv and one PNG per metric to --out; nothing under data/ is written.
 """
 import argparse
-import importlib.util
 from pathlib import Path
 
 import matplotlib
@@ -27,6 +26,7 @@ from matplotlib.patches import Patch
 
 from measure.idvg_pipeline import Vt_at_constant_Id, get_sweeps
 from measure.plot_idvg_all import PALETTE, newest_main_files
+from measure.tr_extraction import extract_VTR
 
 EPS0 = 8.8541878128e-12   # F/m
 VT_ID_PER_WL = 1e-7
@@ -35,20 +35,18 @@ METRICS = {'VT_V': '$V_T$ (V)', 'muFE_cm2Vs': r'$\mu_{FE}$ (cm$^2$/V·s)', 'SS_m
            'VTR_V': '$V_{TR}$ (V)'}
 
 
-def load_tr_funs(path: Path):
-    """Imports the V_TR extraction module from a file path (it lives outside the package)."""
-    spec = importlib.util.spec_from_file_location('tr_funs', path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+def vtr_metrics(vg: np.ndarray, Id: np.ndarray, vd: float, id_limit: float) -> dict:
+    """VT,on, VT,off and VTR (V) from extract_VTR, raw-Id method; NaN when the curve has no usable region.
 
-
-def vtr_metrics(tr, vg: np.ndarray, Id: np.ndarray, vd: float, id_limit: float) -> dict:
-    """VT,on, VT,off and VTR (V) from tr.extract_VTR, raw-Id method; NaN when the extraction fails."""
-    try:
-        on, off, vtr = tr.extract_VTR(vg, np.abs(Id), vd, ID_limit=id_limit, correct_series_R=False)
-    except (ValueError, IndexError, np.linalg.LinAlgError):
-        on = off = vtr = np.nan
+    extract_VTR returns numbers even for a curve that never turns on, so a curve with no point between id_limit and
+    extract_VTR's subthreshold ceiling (5 % of max Id) gets NaN instead."""
+    Id = np.abs(Id)
+    on = off = vtr = np.nan
+    if np.any((Id >= id_limit) & (Id <= 0.05 * np.nanmax(Id))):
+        try:
+            on, off, vtr = extract_VTR(vg, Id, vd, ID_limit=id_limit, correct_series_R=False)
+        except (ValueError, IndexError, np.linalg.LinAlgError):
+            pass
     return {'VTon_V': float(on), 'VToff_V': float(off), 'VTR_V': float(vtr)}
 
 
@@ -74,7 +72,9 @@ def device_metrics(vg: np.ndarray, Id: np.ndarray, W: float, L: float, vd: float
 
 
 def collect(data_dir: Path, samples: list[str], die: str, vd: float, cox: float, exclude_L: list[float],
-            tr=None, id_limit: float = 1e-11) -> pd.DataFrame:
+            id_limit: float = 1e-11) -> pd.DataFrame:
+    """One row per device of each sample's die: sample, device, W, L, file, VT_V, muFE_cm2Vs, SS_mVdec, VTon_V,
+    VToff_V, VTR_V. Devices with L in exclude_L, or with fewer than 6 points at Vd = vd in cycle 1, are left out."""
     rows = []
     for s in samples:
         for dev, path, W, L in newest_main_files(Path(data_dir) / s / die):
@@ -88,7 +88,7 @@ def collect(data_dir: Path, samples: list[str], die: str, vd: float, cox: float,
                                         ('id', get_sweeps(d['Drain_Current'].to_numpy())))}
             rows.append({'sample': s, 'device': dev, 'W': W, 'L': L, 'file': path.name,
                          **device_metrics(f['vg'], f['id'], W, L, vd, cox),
-                         **(vtr_metrics(tr, f['vg'], f['id'], vd, id_limit) if tr else {})})
+                         **vtr_metrics(f['vg'], f['id'], vd, id_limit)})
     return pd.DataFrame(rows)
 
 
@@ -139,8 +139,6 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument('--k', type=float, default=17.0)
     ap.add_argument('--font-scale', type=float, default=2.0)
     ap.add_argument('--out', default='.pptx_figs')
-    ap.add_argument('--tr-funs', default='.pptx_figs/new_TR_extraction_funs.py',
-                    help='file with extract_VTR; VTR is skipped if it is missing')
     ap.add_argument('--id-limit', type=float, default=1e-11, help='lowest Id (A) for the SS-minimum search of VT,off')
     a = ap.parse_args(argv)
     out = Path(a.out)
@@ -148,10 +146,9 @@ def main(argv: list[str] | None = None) -> None:
         ap.error('--out must not be inside a data folder')
     cox = EPS0 * a.k / (a.tox_nm * 1e-9)
     print(f"Cox = {cox * 1e2:.3g} uF/cm^2 ({a.tox_nm:g} nm, k = {a.k:g})")
-    tr = load_tr_funs(Path(a.tr_funs)) if Path(a.tr_funs).is_file() else None
-    if tr is None:
-        print(f"no {a.tr_funs}: VTR skipped")
-    df = collect(Path(a.data_dir), a.samples, a.die, a.vd, cox, a.exclude_L, tr, a.id_limit)
+    df = collect(Path(a.data_dir), a.samples, a.die, a.vd, cox, a.exclude_L, a.id_limit)
+    if df.empty:
+        ap.error(f'no main sweeps at Vd = {a.vd:g} V under {a.data_dir}/{{{",".join(a.samples)}}}/{a.die}')
     out.mkdir(parents=True, exist_ok=True)
     tag = '_'.join(s.replace('wd_bobafet_', '') for s in a.samples)
     df.to_csv(out / f'metrics_{tag}_{a.die}_Vd{a.vd:g}.csv', index=False)
