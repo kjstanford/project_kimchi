@@ -11,11 +11,14 @@ are in `docs/`, one short file each; the departures from the course specificatio
   `measure.notify` emails the end of each live run, and failure streaks, over SMTP, with its settings in `.env`
   (docs/0004-email-notifications.md).
   `measure.plot_idvg_all` (`make plot-idvg`) draws a die's saved Id-Vg curves on one figure, into `.pptx_figs/`.
+  `measure.idvg_metrics_box` (`make box-idvg`, with the VTR extraction in `measure.tr_extraction`),
+  `measure.plot_stress_all` (`make plot-stress`) and `measure.plot_gc_ret_all` (`make plot-gc-ret`) make the other
+  slide figures from saved data, into `.pptx_figs/` too.
 - `src/app/` and `src/web/`: the web app. Check a config, preview its probe plan on the stage map, dry-run it on
   the fake instruments (or, on the lab PC only, run it live behind two typed confirmations), follow the run
   live, and browse saved data as interactive plots.
 - `docker/`, `Makefile`: the development container and every command, as specified below. `make verify` is green
-  (lint, 70 tests, smoke); `make e2e` drives the page in Chromium.
+  (lint, 86 tests, smoke); `make e2e` drives the page in Chromium.
 - Not built yet: an analysis page (Vt roll-off, TLM Rc·W from `measure.anneal_series`) and default plot axes for
   the gain-cell PMU and stress-staircase files.
 
@@ -43,7 +46,8 @@ docker/              everything that builds the development container, and nothi
 src/app/             the backend: api.py (routes only), pipeline.py, models.py, runs.py, __main__.py
 src/web/             the page: index.html, app.js, styles.css
 src/measure/         the measurement package and its CLI (docs/0002-measure-in-src.md)
-tests/               pytest (test_pipeline, test_runs, test_api, test_measure_dryrun, test_plot_idvg), smoke.py, e2e.mjs
+tests/               pytest (test_pipeline, test_runs, test_api, test_measure_dryrun, test_plot_idvg,
+                     test_idvg_metrics_box, test_plot_stress_all, test_plot_gc_ret_all), smoke.py, e2e.mjs
 docs/                decisions worth remembering, one short file each
 configs/             run configs (JSON), one per sample / die / experiment
 layouts/             device CSVs from the mask layouts, and the scripts that make them (gds env)

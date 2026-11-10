@@ -97,6 +97,25 @@ lines and one colour per channel length whatever the width. It reads `data/` and
 make plot-idvg ARGS="--sample wd_bobafet_6802 --out .pptx_figs/wd_bobafet"   # --die 0_0 --vd 0.05 --alpha 0.15 --font-scale 2
 ```
 
+The other figures for slides, all into `--out` and nothing else:
+
+- `make box-idvg`: box plots per sample and L of VT (Id = 1e-7·W/L), µFE (max gm, Cox of 10 nm HfO2 with k = 17),
+  SS (steepest 3-point fit above 10 pA) and VTR = VT,on − VT,off (`measure.tr_extraction.extract_VTR`, raw-Id
+  method, K. Jana et al. Eqs. 6-9), from the forward branch of cycle 1 of each device's newest main sweep, plus a
+  per-device CSV. The raw-Id VT,on is biased low by series resistance (the test shows it); `extract_VTR` also has
+  the Y-function method for that, which the box plot does not use.
+- `make plot-stress`: ΔVT of every PMU stress-staircase run on a die (`data_k4200_stress/`), stress and 0 V
+  recovery, relative to each run's own reference staircase. Runs on pre-stressed devices (a device with several
+  runs, or a `WARNING_*already_stressed` file) are left out unless `--include-repeats`.
+- `make plot-gc-ret`: |I_read| against retention time of every 4200A gain-cell retention run on a die
+  (`data_k4200/`), PMU and SMU in separate panels, solid for stored 1, dashed for stored 0.
+
+```bash
+make box-idvg ARGS="--samples wd_bobafet_6802 wd_bobafet_6916 --out .pptx_figs/wd_bobafet"   # --die 0_0 --vd 0.05 --exclude-L 10
+make plot-stress ARGS="--out .pptx_figs/wd_bobafet"    # --sample wd_bobafet_6916 --die 0_0 --include-repeats
+make plot-gc-ret ARGS="--out .pptx_figs/wd_bobafet"    # --sample wd_bobafet_6916 --die 0_0
+```
+
 ## What its results are fit for
 
 The app computes nothing new about the devices: Vt, on/off and the screening flags are those of
@@ -106,7 +125,7 @@ device.
 
 ## Checks
 
-`make verify` is the gate (lint, 70 tests, smoke, about 6 min). None of the tests can reach an instrument: every
+`make verify` is the gate (lint, 86 tests, smoke, about 6 min). None of the tests can reach an instrument: every
 `connect()` is replaced by a failure.
 
 - Differential, with the CLI as answer key: the web plan equals `run_map.build_plan` (order, count, summed
@@ -120,6 +139,11 @@ device.
   the password never appearing in a log.
 - `measure.plot_idvg_all` on a synthetic die: only the newest main sweep per device, only the chosen Vd, |Id|·L/W
   by hand, one colour per L.
+- `measure.idvg_metrics_box` and `measure.tr_extraction` on an analytic transistor (Id = βVd·m·ln(1+e^((Vg−VT)/m))),
+  against VT, µFE, SS, VT,on and VT,off derived by hand; series resistance lowers the raw-Id VT,on; a curve that
+  never turns on gives NaN; only cycle 1, forward, the chosen Vd and the newest file are used.
+- `measure.plot_stress_all` and `measure.plot_gc_ret_all` on synthetic dies: the right Vt table per run, the
+  pre-stressed runs left out, ΔVT drawn in mV; SMU read current = −RBL_Current, retention rows only, t = 0 left out.
 - `make e2e`: a user in Chromium previews and dry-runs 3 devices and sees 3 rows, 3 green devices and the curve.
 
 ## Where the backend/frontend boundary is
