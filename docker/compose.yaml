@@ -41,6 +41,23 @@ services:
     volumes: [".:/lock"]
     command: ["npm", "install", "--package-lock-only", "--no-audit", "--no-fund"]
 
+  gh:
+    profiles: [tools]
+    build: { <<: *build, target: gh }
+    image: ${COMPOSE_PROJECT_NAME}-gh
+    user: "${HOST_UID}:${HOST_GID}"
+    working_dir: /work
+    volumes: ["..:/work:ro"]
+    # GH_TOKEN only from .env; safe.directory set for this container's git only (no git config is written)
+    environment:
+      GH_TOKEN: "${GH_TOKEN:-}"
+      HTTP_PROXY: "${HTTP_PROXY:-}"
+      HTTPS_PROXY: "${HTTPS_PROXY:-}"
+      NO_PROXY: "${NO_PROXY:-}"
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: /work
+
   e2e:
     profiles: [e2e]
     build: { <<: *build, target: e2e }

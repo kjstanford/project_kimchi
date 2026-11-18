@@ -242,6 +242,23 @@ typed confirmation.
 3. **A long run outlives the tab.** The run lives in the server; a reloaded page replays its events. Closing the
    tab never stops it; Stop does.
 
+## Opening a pull request
+
+The GitHub CLI runs in its own container, so nothing is installed on your machine. Do this once:
+
+1. Put a GitHub token in `.env` as `GH_TOKEN`. A fine-grained token for this repository only, with Contents:
+   read and Pull requests: read and write, is enough.
+2. Run `make build-gh`.
+
+Then push your branch with `git push` and open the pull request:
+
+```bash
+make pr TITLE="Short title" BODY=.ignore/pr.md
+```
+
+`BODY` is a Markdown file inside the repository (`.ignore/` is gitignored). `make pr-status` shows the
+branch's pull request. Neither target merges; merging stays a reviewed step on GitHub (docs/0005).
+
 ## Layout and rules
 ARCHITECTURE.md (design, departures from the course layout), AGENTS.md (rules for anyone working here), docs/.
 

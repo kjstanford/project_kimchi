@@ -36,9 +36,9 @@ are in `docs/`, one short file each; the departures from the course specificatio
 
 ```text
 docker/              everything that builds the development container, and nothing else; the build context
-  Dockerfile         stages uv, node, vendor, e2e, final
+  Dockerfile         stages uv, node, vendor, e2e, gh, final
   .dockerignore
-  compose.yaml       app; lock-py, lock-js (profile tools); e2e (profile e2e)
+  compose.yaml       app; lock-py, lock-js, gh (profile tools); e2e (profile e2e)
   pyproject.toml     Python dependencies, requires-python = ">=3.14,<3.15"
   uv.lock
   package.json       frontend libraries (plotly.js-dist-min; playwright for the e2e stage only)
@@ -112,6 +112,11 @@ Makefile  README.md  ARCHITECTURE.md  AGENTS.md  CLAUDE.md  PROMPT.md (the speci
   the `qcodes` env's python (quoted in the recipes, so a path with spaces works). `layout-localbg-v5` writes the
   localBG v5 device CSVs from the GDS, with `GDS_PY` the `gds` env's python (KLayout).
 
+- Only when publishing: `build-gh`, `pr` (opens a pull request from the current branch to `main`; it refuses
+  `main`, an empty `TITLE`, a missing `BODY` file or a missing `GH_TOKEN`) and `pr-status`. The GitHub CLI runs
+  in its own `gh` stage and service (pinned, checksum-verified, repository mounted read-only, token from `.env`).
+  There is no merge target (docs/0005-gh-in-container.md).
+
 Every container target runs through compose (`docker compose -f docker/compose.yaml`).
 
 ## Departures from the course specification
@@ -123,5 +128,6 @@ Every container target runs through compose (`docker compose -f docker/compose.y
 | `runs.py` beside api/pipeline/models | a run is long-lived state, not a request pipeline; docs/0003 |
 | `data*/` are instrument output, not `data/raw` + `processed` | the lab's folders, which no task may modify |
 | `e2e` Dockerfile stage | the browser test needs Chromium, which the app image does not |
+| `gh` Dockerfile stage | pull requests from the Makefile; the app image does not need the GitHub CLI; docs/0005 |
 | `docker/certs/` | builds behind a TLS-inspecting proxy; empty and inert elsewhere |
 | uv installed from PyPI, not ghcr.io | ghcr.io is not reachable from every network this is built on |

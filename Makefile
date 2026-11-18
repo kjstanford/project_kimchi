@@ -20,7 +20,7 @@ BRANCH ?= $(shell git rev-parse --abbrev-ref HEAD)
 REVIEW_DIR := .ignore/reviewer_clone
 
 .DEFAULT_GOAL := help
-.PHONY: help build up down verify clean test lint fmt smoke e2e logs shell lock up-live run-cli notify-test plot-idvg box-idvg plot-stress plot-gc-ret layout-localbg-v5 sample-devices dry-run reviewer-check
+.PHONY: help build up down verify clean test lint fmt smoke e2e logs shell lock up-live run-cli notify-test plot-idvg box-idvg plot-stress plot-gc-ret layout-localbg-v5 sample-devices dry-run reviewer-check build-gh pr pr-status
 
 help: ## list the targets
 	@awk 'BEGIN {FS = ":.*## "} /^##@/ {printf "\n%s\n", substr($$0, 5)} /^[a-z0-9-]+:.*## / {printf "  %-10s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -51,7 +51,7 @@ reviewer-check: ## a reviewer's path, no lab: fresh clone of the pushed BRANCH, 
 	git clone --quiet --branch $(BRANCH) --single-branch $(REPO) $(REVIEW_DIR)
 	cp $(REVIEW_DIR)/.env.example $(REVIEW_DIR)/.env
 	# the clone gets its own compose project and none of this checkout's .env settings (mail credentials, PORT)
-	cd $(REVIEW_DIR) && env -u COMPOSE_PROJECT_NAME -u PORT -u NOTIFY_SMTP_USER -u NOTIFY_SMTP_PASSWORD -u NOTIFY_EMAIL_TO -u NOTIFY_EMAIL_FROM sh -c '\
+	cd $(REVIEW_DIR) && env -u COMPOSE_PROJECT_NAME -u PORT -u GH_TOKEN -u NOTIFY_SMTP_USER -u NOTIFY_SMTP_PASSWORD -u NOTIFY_EMAIL_TO -u NOTIFY_EMAIL_FROM sh -c '\
 	  git log -1 --format="reviewer-check at %h (%s)" && \
 	  "$(MAKE)" build && "$(MAKE)" verify && "$(MAKE)" up && "$(MAKE)" down && \
 	  "$(MAKE)" dry-run ARGS="--config configs/lc500_idvg.json --limit 3" && \
@@ -103,6 +103,25 @@ shell: ## a shell inside the container
 lock: ## record exact versions in docker/uv.lock and docker/package-lock.json (commit each with its manifest)
 	$(COMPOSE) --profile tools run --rm --build lock-py
 	$(COMPOSE) --profile tools run --rm --build lock-js
+
+##@ Only when publishing (GitHub CLI in its own container, GH_TOKEN from .env; push the branch first with git)
+GH := $(COMPOSE) --profile tools run --rm gh
+TITLE ?=
+BODY ?= .ignore/pr.md
+
+build-gh: ## build the GitHub CLI image (once, and after a GH_VERSION bump in docker/Dockerfile)
+	$(COMPOSE) --profile tools build gh
+
+pr: ## open a pull request BRANCH -> main (never merges), e.g. make pr TITLE="..." BODY=.ignore/pr.md
+	@test "$(BRANCH)" != main || { echo "refusing: a pull request comes from a feature branch, not main"; exit 2; }
+	@test -n "$(TITLE)" || { echo 'refusing: TITLE="..." is required'; exit 2; }
+	@test -f "$(BODY)" || { echo "refusing: BODY file $(BODY) not found (a path inside the repository)"; exit 2; }
+	@test -n "$$GH_TOKEN" || { echo "refusing: GH_TOKEN is not set in .env (see .env.example)"; exit 2; }
+	$(GH) pr create --base main --head "$(BRANCH)" --title "$(TITLE)" --body-file "$(BODY)"
+
+pr-status: ## the pull request of BRANCH: title, state, link and description
+	@test -n "$$GH_TOKEN" || { echo "refusing: GH_TOKEN is not set in .env (see .env.example)"; exit 2; }
+	$(GH) pr view "$(BRANCH)"
 
 ##@ Lab PC only (native, in the qcodes env: the only way to reach GPIB)
 up-live: ## the app with LIVE runs allowed, on 127.0.0.1 (make up-live PY=".../envs/qcodes/python.exe")
