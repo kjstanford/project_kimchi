@@ -13,6 +13,7 @@ measure/tests/__pycache__
 .claude/
 .archived_prompts/
 PROMPT*
+!PROMPT.md
 .venv/
 docker/certs/*.crt
 .env

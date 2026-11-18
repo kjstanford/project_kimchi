@@ -14,9 +14,13 @@ PORT ?= 8300
 PY ?= python
 # Lab PC only: the gds env's python (KLayout), for the layout CSV scripts
 GDS_PY ?= python
+# reviewer-check: the repository and branch a reviewer clones (default: this one's remote and current branch)
+REPO ?= $(shell git remote get-url origin)
+BRANCH ?= $(shell git rev-parse --abbrev-ref HEAD)
+REVIEW_DIR := .ignore/reviewer_clone
 
 .DEFAULT_GOAL := help
-.PHONY: help build up down verify clean test lint fmt smoke e2e logs shell lock up-live run-cli notify-test plot-idvg box-idvg plot-stress plot-gc-ret layout-localbg-v5 sample-devices
+.PHONY: help build up down verify clean test lint fmt smoke e2e logs shell lock up-live run-cli notify-test plot-idvg box-idvg plot-stress plot-gc-ret layout-localbg-v5 sample-devices dry-run reviewer-check build-gh pr pr-status
 
 help: ## list the targets
 	@awk 'BEGIN {FS = ":.*## "} /^##@/ {printf "\n%s\n", substr($$0, 5)} /^[a-z0-9-]+:.*## / {printf "  %-10s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -36,7 +40,23 @@ verify: lint test smoke ## the gate: lint, every test, a smoke run
 
 clean: ## back to a fresh clone: this project's containers and images, test and dry-run output (data*/ and .env kept)
 	$(COMPOSE) --profile tools --profile e2e down --rmi all --volumes --remove-orphans
-	rm -rf .ignore/web_dryrun .ignore/_dryrun_test .ignore/_webapp_test .ruff_cache
+	rm -rf .ignore/web_dryrun .ignore/cli_dryrun .ignore/_dryrun_test .ignore/_webapp_test .ruff_cache
+
+dry-run: ## the CLI on the fake instruments, no lab needed; output to .ignore/cli_dryrun/, e.g. ARGS="--config configs/lc500_idvg.json --limit 3"
+	@case " $(ARGS) " in *" --live "*|*--data-dir*) echo "dry-run takes neither --live nor --data-dir (live runs: make run-cli on the lab PC)"; exit 2;; esac
+	$(RUN) python -B -m measure.run_map --data-dir .ignore/cli_dryrun $(ARGS)
+
+reviewer-check: ## a reviewer's path, no lab: fresh clone of the pushed BRANCH, .env from .env.example, build, verify, up, dry-run, clean
+	rm -rf $(REVIEW_DIR)
+	git clone --quiet --branch $(BRANCH) --single-branch $(REPO) $(REVIEW_DIR)
+	cp $(REVIEW_DIR)/.env.example $(REVIEW_DIR)/.env
+	# the clone gets its own compose project and none of this checkout's .env settings (mail credentials, PORT)
+	cd $(REVIEW_DIR) && env -u COMPOSE_PROJECT_NAME -u PORT -u GH_TOKEN -u NOTIFY_SMTP_USER -u NOTIFY_SMTP_PASSWORD -u NOTIFY_EMAIL_TO -u NOTIFY_EMAIL_FROM sh -c '\
+	  git log -1 --format="reviewer-check at %h (%s)" && \
+	  "$(MAKE)" build && "$(MAKE)" verify && "$(MAKE)" up && "$(MAKE)" down && \
+	  "$(MAKE)" dry-run ARGS="--config configs/lc500_idvg.json --limit 3" && \
+	  "$(MAKE)" clean'
+	rm -rf $(REVIEW_DIR)
 
 ##@ While developing
 test: ## all tests in the container (web app + measurement dry-runs, ~6 min); a subset: ARGS="tests/test_api.py"
@@ -83,6 +103,26 @@ shell: ## a shell inside the container
 lock: ## record exact versions in docker/uv.lock and docker/package-lock.json (commit each with its manifest)
 	$(COMPOSE) --profile tools run --rm --build lock-py
 	$(COMPOSE) --profile tools run --rm --build lock-js
+
+##@ Only when publishing (GitHub CLI in its own container, GH_TOKEN from .env; push the branch first with git)
+GH := $(COMPOSE) --profile tools run --rm gh
+TITLE ?=
+BODY ?= .ignore/pr.md
+
+build-gh: ## build the GitHub CLI image (once, and after a GH_VERSION bump in docker/Dockerfile)
+	$(COMPOSE) --profile tools build gh
+
+pr: ## open a pull request BRANCH -> main (never merges), e.g. make pr TITLE="..." BODY=.ignore/pr.md
+	@test "$(BRANCH)" != main || { echo "refusing: a pull request comes from a feature branch, not main"; exit 2; }
+	@test -n "$(TITLE)" || { echo 'refusing: TITLE="..." is required'; exit 2; }
+	@test -f "$(BODY)" || { echo "refusing: BODY file $(BODY) not found (a path inside the repository)"; exit 2; }
+	@test -n "$$GH_TOKEN" || { echo "refusing: GH_TOKEN is not set in .env (see .env.example)"; exit 2; }
+	$(GH) pr create --base main --head "$(BRANCH)" --title "$(TITLE)" --body-file "$(BODY)"
+
+pr-status: ## the pull request of BRANCH: title, state, link and description
+	@test -n "$$GH_TOKEN" || { echo "refusing: GH_TOKEN is not set in .env (see .env.example)"; exit 2; }
+	$(GH) pr view "$(BRANCH)" --json number,title,state,isDraft,mergeable,reviewDecision,url --jq \
+	  '"#\(.number) \(.title)\nstate: \(.state)\(if .isDraft then " (draft)" else "" end), mergeable: \(.mergeable), review: \(if (.reviewDecision // "") == "" then "none yet" else .reviewDecision end)\n\(.url)"'
 
 ##@ Lab PC only (native, in the qcodes env: the only way to reach GPIB)
 up-live: ## the app with LIVE runs allowed, on 127.0.0.1 (make up-live PY=".../envs/qcodes/python.exe")

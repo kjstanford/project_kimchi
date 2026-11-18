@@ -36,9 +36,9 @@ are in `docs/`, one short file each; the departures from the course specificatio
 
 ```text
 docker/              everything that builds the development container, and nothing else; the build context
-  Dockerfile         stages uv, node, vendor, e2e, final
+  Dockerfile         stages uv, node, vendor, e2e, gh, final
   .dockerignore
-  compose.yaml       app; lock-py, lock-js (profile tools); e2e (profile e2e)
+  compose.yaml       app; lock-py, lock-js, gh (profile tools); e2e (profile e2e)
   pyproject.toml     Python dependencies, requires-python = ">=3.14,<3.15"
   uv.lock
   package.json       frontend libraries (plotly.js-dist-min; playwright for the e2e stage only)
@@ -50,13 +50,13 @@ src/measure/         the measurement package and its CLI (docs/0002-measure-in-s
 tests/               pytest (test_pipeline, test_runs, test_api, test_measure_dryrun, test_plot_idvg,
                      test_idvg_metrics_box, test_plot_stress_all, test_plot_gc_ret_all, test_sample_devices),
                      smoke.py, e2e.mjs
-docs/                decisions worth remembering, one short file each
+docs/                decisions worth remembering, one short file each, plus the capstone check-in (check-in.md)
 configs/             run configs (JSON), one per sample / die / experiment
 layouts/             device CSVs from the mask layouts, and the scripts that make them (gds env);
                      the GDS files themselves are gitignored
 data/ data_k4200/ data_k4200_stress/   measurement output, gitignored, never modified by any task
 .pptx_figs/          figures for slides, gitignored
-Makefile  README.md  ARCHITECTURE.md  AGENTS.md  CLAUDE.md
+Makefile  README.md  ARCHITECTURE.md  AGENTS.md  CLAUDE.md  PROMPT.md (the specification)
 .gitignore  .env.example  ruff.toml  pytest.ini
 ```
 
@@ -101,13 +101,21 @@ Makefile  README.md  ARCHITECTURE.md  AGENTS.md  CLAUDE.md
   Make and git), `clean` (this project's containers and images, test and dry-run output; `data*/` and `.env`
   are kept, and so are shared base images and build cache).
 - While developing: `test` (`ARGS=` for a subset), `lint`, `fmt`, `smoke` (starts the app, checks a real
-  preview: 144 sites, A:2 B:2 C:2, 400 µm of travel, Plotly served), `e2e`, `logs`, `shell`.
+  preview: 144 sites, A:2 B:2 C:2, 400 µm of travel, Plotly served), `e2e`, `logs`, `shell`, `dry-run` (the CLI
+  on the fake instruments, into `.ignore/cli_dryrun/`; it refuses `--live`), `reviewer-check` (a fresh clone of
+  the pushed branch in `.ignore/reviewer_clone/`: build, verify, up, dry-run, clean, with no lab and no mail
+  settings; the clone gets its own compose project).
 - Only when dependencies change: `lock` records exact versions in `docker/uv.lock` and
   `docker/package-lock.json`. `build` uses only the locks, and says so, with this instruction, when a manifest
   and its lock disagree.
 - Lab PC only: `up-live`, `run-cli` and `notify-test` (one test email from the `.env` settings), native, with `PY`
   the `qcodes` env's python (quoted in the recipes, so a path with spaces works). `layout-localbg-v5` writes the
   localBG v5 device CSVs from the GDS, with `GDS_PY` the `gds` env's python (KLayout).
+
+- Only when publishing: `build-gh`, `pr` (opens a pull request from the current branch to `main`; it refuses
+  `main`, an empty `TITLE`, a missing `BODY` file or a missing `GH_TOKEN`) and `pr-status`. The GitHub CLI runs
+  in its own `gh` stage and service (pinned, checksum-verified, repository mounted read-only, token from `.env`).
+  There is no merge target (docs/0005-gh-in-container.md).
 
 Every container target runs through compose (`docker compose -f docker/compose.yaml`).
 
@@ -120,5 +128,6 @@ Every container target runs through compose (`docker compose -f docker/compose.y
 | `runs.py` beside api/pipeline/models | a run is long-lived state, not a request pipeline; docs/0003 |
 | `data*/` are instrument output, not `data/raw` + `processed` | the lab's folders, which no task may modify |
 | `e2e` Dockerfile stage | the browser test needs Chromium, which the app image does not |
+| `gh` Dockerfile stage | pull requests from the Makefile; the app image does not need the GitHub CLI; docs/0005 |
 | `docker/certs/` | builds behind a TLS-inspecting proxy; empty and inert elsewhere |
 | uv installed from PyPI, not ghcr.io | ghcr.io is not reachable from every network this is built on |

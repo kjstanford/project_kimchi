@@ -29,6 +29,23 @@ Open http://127.0.0.1:8300/ (the API contract is at /docs). `make down` stops it
 
 In the container the app is **dry-run only**: fake instruments, data written to `.ignore/web_dryrun/`.
 
+### Without the lab
+
+You don't need a probe station, an analyzer, a licence or mail settings to try everything except a live run.
+After the three commands above:
+
+- **The web app** (`make up`) runs the whole flow on the fake instruments: pick a config, preview the plan,
+  dry-run it, then open the curves under Data.
+- **The CLI** is `make dry-run ARGS="--config configs/lc500_idvg.json --limit 3"`. It does the same on the fakes
+  and writes to `.ignore/cli_dryrun/`.
+- **`make verify`** checks the lot (lint, every test, a smoke run).
+
+**Needs the lab PC:** `up-live`, `run-cli`, `notify-test` and `layout-localbg-v5`. They run natively with the lab's
+conda envs, because Docker cannot reach GPIB.
+
+`make reviewer-check` repeats a reviewer's path from a fresh clone of the pushed branch, in
+`.ignore/reviewer_clone/`. It runs build, verify, up, a CLI dry run and clean, then deletes the clone.
+
 ## What the page does
 
 | Tab | What you see |
@@ -224,6 +241,23 @@ typed confirmation.
    two on every change.
 3. **A long run outlives the tab.** The run lives in the server; a reloaded page replays its events. Closing the
    tab never stops it; Stop does.
+
+## Opening a pull request
+
+The GitHub CLI runs in its own container, so nothing is installed on your machine. Do this once:
+
+1. Put a GitHub token in `.env` as `GH_TOKEN`. A fine-grained token for this repository only, with Contents:
+   read and Pull requests: read and write, is enough.
+2. Run `make build-gh`.
+
+Then push your branch with `git push` and open the pull request:
+
+```bash
+make pr TITLE="Short title" BODY=.ignore/pr.md
+```
+
+`BODY` is a Markdown file inside the repository (`.ignore/` is gitignored). `make pr-status` shows the
+branch's pull request. Neither target merges; merging stays a reviewed step on GitHub (docs/0005).
 
 ## Layout and rules
 ARCHITECTURE.md (design, departures from the course layout), AGENTS.md (rules for anyone working here), docs/.

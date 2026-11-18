@@ -41,6 +41,28 @@ services:
     volumes: [".:/lock"]
     command: ["npm", "install", "--package-lock-only", "--no-audit", "--no-fund"]
 
+  gh:
+    profiles: [tools]
+    build: { <<: *build, target: gh }
+    image: ${COMPOSE_PROJECT_NAME}-gh
+    user: "${HOST_UID}:${HOST_GID}"
+    working_dir: /work
+    volumes: ["..:/work:ro"]
+    # GH_TOKEN only from .env. Git settings for this container only (no git config is written): trust the mount,
+    # and read a Windows checkout (CRLF, no file modes) as the host's git does, so it does not look modified.
+    environment:
+      GH_TOKEN: "${GH_TOKEN:-}"
+      HTTP_PROXY: "${HTTP_PROXY:-}"
+      HTTPS_PROXY: "${HTTPS_PROXY:-}"
+      NO_PROXY: "${NO_PROXY:-}"
+      GIT_CONFIG_COUNT: "3"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: /work
+      GIT_CONFIG_KEY_1: core.autocrlf
+      GIT_CONFIG_VALUE_1: "true"
+      GIT_CONFIG_KEY_2: core.fileMode
+      GIT_CONFIG_VALUE_2: "false"
+
   e2e:
     profiles: [e2e]
     build: { <<: *build, target: e2e }

@@ -3,6 +3,7 @@
 #   node    tool stage: runs `make lock` for the frontend (package-lock.json)
 #   vendor  installs the frontend libraries from package-lock.json
 #   e2e     Chromium + Playwright for the end-to-end test only (make e2e); never part of the app image
+#   gh      the GitHub CLI (pinned, checksum-verified) for make pr / pr-status only; never part of the app image
 #   final   Python dependencies from uv.lock + the frontend libraries from vendor
 # certs/ may hold extra CA certificates (*.crt) for a TLS-inspecting proxy; it is empty on a normal machine.
 
@@ -32,6 +33,22 @@ WORKDIR /opt/e2e
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 ENV NODE_PATH=/opt/e2e/node_modules
+
+FROM debian:bookworm-slim AS gh
+COPY certs/ /usr/local/share/ca-certificates/extra/
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git \
+    && update-ca-certificates && rm -rf /var/lib/apt/lists/*
+# Bump GH_VERSION to update; the build stops if the tarball does not match the release's checksum file.
+ARG GH_VERSION=2.62.0
+RUN set -eu; arch="$(dpkg --print-architecture)"; name="gh_${GH_VERSION}_linux_${arch}"; \
+    base="https://github.com/cli/cli/releases/download/v${GH_VERSION}"; cd /tmp; \
+    curl -fsSLO "$base/$name.tar.gz"; curl -fsSLO "$base/gh_${GH_VERSION}_checksums.txt"; \
+    grep " $name.tar.gz\$" "gh_${GH_VERSION}_checksums.txt" | sha256sum -c -; \
+    tar -xzf "$name.tar.gz" -C /usr/local/bin --strip-components=2 "$name/bin/gh"; \
+    rm -f "$name.tar.gz" "gh_${GH_VERSION}_checksums.txt"; gh --version
+ENV HOME=/tmp GH_NO_UPDATE_NOTIFIER=1 GH_PROMPT_DISABLED=1
+WORKDIR /work
+ENTRYPOINT ["gh"]
 
 FROM uv AS final
 WORKDIR /opt/project
