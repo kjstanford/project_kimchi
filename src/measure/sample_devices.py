@@ -6,8 +6,8 @@
 The blocks ('region' column) repeat the same sites. Devices already measured (they have an initial scan in the
 data folder, as run_map's resume sees it) count toward their site. For each site, the missing copies are drawn at
 random from its unmeasured blocks, preferring the blocks with the fewest devices so far (measured + picked), so
-the blocks stay balanced. --include devices are always picked: the device the probes are on must be in a run's
-device CSV. Writes the picked devices, in the layout CSVs' own schema, to --out; nothing under data/ is written.
+the blocks stay balanced. --include devices are always in the CSV: the device the probes are on must be in a run's
+device CSV. An unmeasured one is picked; a measured one is only there as the origin (run_map's resume skips it). Writes the picked devices, in the layout CSVs' own schema, to --out; nothing under data/ is written.
 """
 import argparse
 import json
@@ -77,13 +77,15 @@ def main(argv: list[str] | None = None) -> Path:
     cfg = json.loads(Path(a.config).read_text())
     raw = load_raw(cfg['device_csv'])
     done = measured_ids(cfg, a.data_dir or cfg['data_dir'])
-    keys = pick(raw, done, a.per_site, a.seed, [k for k in a.include.split(',') if k])
-    sel = raw[raw['device_id'].str.upper().isin(keys)]
+    include = [k.upper() for k in a.include.split(',') if k]
+    keys = pick(raw, done, a.per_site, a.seed, include)
+    # the probes' device stays in the CSV even when measured: run_map needs it as the origin and resume skips it
+    sel = raw[raw['device_id'].str.upper().isin(set(keys) | set(include))]
     out.parent.mkdir(parents=True, exist_ok=True)
     sel.to_csv(out, index=False)
     per_block = Counter(raw.loc[raw['device_id'].str.upper().isin(done), BLOCK])
-    print(f"{out}: {len(sel)} devices to measure ({len(done)} already measured), seed {a.seed}")
-    for b, n in sorted(Counter(sel[BLOCK]).items()):
+    print(f"{out}: {len(keys)} devices to measure ({len(done)} already measured), seed {a.seed}")
+    for b, n in sorted(Counter(raw.loc[raw['device_id'].str.upper().isin(keys), BLOCK]).items()):
         print(f"  {b}: {n} new + {per_block.get(b, 0)} measured")
     return out
 

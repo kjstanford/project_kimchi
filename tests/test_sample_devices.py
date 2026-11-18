@@ -58,13 +58,27 @@ def test_yanjie_sample3_plan(capsys):
     print(f"moves: {sum(p['hops'] for p in plan)} hops for {len(plan)} devices")
 
 
+def test_yanjie_sample4_plan(capsys):
+    """The follow-up run: a 4th copy of every site (35 per block), from BR-R15C14, where sample3 left the probes.
+    BR-R15C14 is measured already; it is in the CSV only as the origin, and resume skips it on the lab PC."""
+    from measure import run_map
+
+    cfg = json.loads(Path("configs/yanjie_in203_110cycleHfO2_R1_sample4_idvg.json").read_text())
+    plan, full = run_map.build_plan({**cfg, "repeat_measurement": True}, data_dir=str(TMP))
+    keys = [p["key"] for p in plan]
+    assert len(keys) == len(set(keys)) == 211 and keys[0] == "BR-R15C14" and (plan[0]["dx"], plan[0]["dy"]) == (0, 0)
+    assert Counter(full["region"]) == {"BC": 35, "BR": 36, "MC": 35, "ML": 35, "TL": 35, "TR": 35}
+    sample3 = set(pd.read_csv("configs/yanjie_in203_110cycleHfO2_R1_sample3_devices.csv")["device_id"])
+    assert set(keys) & sample3 == {"BR-R15C14"}
+    print("block order:", [k[:2] for i, k in enumerate(keys) if i == 0 or keys[i - 1][:2] != k[:2]])
+
+
 def test_main_writes_a_device_map(data_dir):
     out = TMP / "out" / "devices.csv"
-    sd.main(
-        ["--config", CFG, "--per-site", "3", "--include", "TR-R02C05", "--data-dir", str(data_dir), "--out", str(out)]
-    )
+    inc = "TR-R02C05,TL-R01C01"  # unmeasured, and measured (the probes' device: in the CSV, not a new pick)
+    sd.main(["--config", CFG, "--per-site", "3", "--include", inc, "--data-dir", str(data_dir), "--out", str(out)])
     full = dm.load_devices(str(out))
-    assert len(full) == 630 - 42 and "TR-R02C05" in set(full["key"]) and full["W"].notna().all()
+    assert len(full) == 630 - 42 + 1 and {"TR-R02C05", "TL-R01C01"} <= set(full["key"]) and full["W"].notna().all()
     assert list(pd.read_csv(out).columns) == list(pd.read_csv("layouts/localbg_v5_R1_TL.csv").columns)
     with pytest.raises(SystemExit):
         sd.main(["--config", CFG, "--per-site", "3", "--out", "data/x.csv"])

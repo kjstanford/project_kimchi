@@ -122,6 +122,12 @@ block:
 make sample-devices ARGS="--config configs/yanjie_in203_110cycleHfO2_R1_all_idvg.json --per-site 3 --seed 1 --include TR-R01C14 --out configs/yanjie_in203_110cycleHfO2_R1_sample3_devices.csv"
 ```
 
+`--include` devices are always in the CSV. A measured one, such as the device the probes were left on, is there
+only as the origin, and resume skips it. `configs/yanjie_in203_110cycleHfO2_R1_sample4_idvg.json` is the follow-up
+run: a 4th copy of every site (N = 4, seed 2, 35 per block, 210 devices). It starts at `BR-R15C14`, where sample3
+ended, and runs from the bottom of the die up. To fit a tool reservation, add `--limit N` to measure only the first
+N new devices, at about 1.1 devices per minute.
+
 Regenerate the CSVs after a layout change, on a PC with the `gds` env (the script stops if any of its checks
 fails):
 
@@ -168,7 +174,7 @@ device.
 
 ## Checks
 
-`make verify` is the gate (lint, 90 tests, smoke, about 6 min). None of the tests can reach an instrument: every
+`make verify` is the gate (lint, 91 tests, smoke, about 6 min). None of the tests can reach an instrument: every
 `connect()` is replaced by a failure.
 
 - Differential, with the CLI as answer key: the web plan equals `run_map.build_plan` (order, count, summed

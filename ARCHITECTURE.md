@@ -19,7 +19,7 @@ are in `docs/`, one short file each; the departures from the course specificatio
   the fake instruments (or, on the lab PC only, run it live behind two typed confirmations), follow the run
   live, and browse saved data as interactive plots.
 - `docker/`, `Makefile`: the development container and every command, as specified below. `make verify` is green
-  (lint, 90 tests, smoke); `make e2e` drives the page in Chromium.
+  (lint, 91 tests, smoke); `make e2e` drives the page in Chromium.
 - Not built yet: an analysis page (Vt roll-off, TLM Rc·W from `measure.anneal_series`) and default plot axes for
   the gain-cell PMU and stress-staircase files.
 
