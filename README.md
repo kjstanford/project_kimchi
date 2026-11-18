@@ -111,6 +111,17 @@ at roughly 53 s per device). Its serpentine covers the whole die: each row runs 
 (TL with TR, ML with MC, BC with BR), and the 3.85 mm step over the contact-study block between TL and TR is
 split into hops. Devices already scanned are skipped, so it carries on from a TL-only run.
 
+A shorter run measures a sample instead. `make sample-devices` (`measure.sample_devices`) picks the devices so
+that every site (Row, Column) is measured in N of the six blocks. Devices already scanned count toward their site
+and are never picked again. The missing copies are drawn at random (seeded), from the blocks with the fewest
+devices so far, which keeps the blocks balanced. `configs/yanjie_in203_110cycleHfO2_R1_sample3_idvg.json` runs
+the N = 3 sample, seed 1, from `TR-R01C14`. That is 535 devices, about 8 h, leaving 105 measured devices per
+block:
+
+```bash
+make sample-devices ARGS="--config configs/yanjie_in203_110cycleHfO2_R1_all_idvg.json --per-site 3 --seed 1 --include TR-R01C14 --out configs/yanjie_in203_110cycleHfO2_R1_sample3_devices.csv"
+```
+
 Regenerate the CSVs after a layout change, on a PC with the `gds` env (the script stops if any of its checks
 fails):
 
@@ -157,7 +168,7 @@ device.
 
 ## Checks
 
-`make verify` is the gate (lint, 87 tests, smoke, about 6 min). None of the tests can reach an instrument: every
+`make verify` is the gate (lint, 90 tests, smoke, about 6 min). None of the tests can reach an instrument: every
 `connect()` is replaced by a failure.
 
 - Differential, with the CLI as answer key: the web plan equals `run_map.build_plan` (order, count, summed
@@ -181,6 +192,9 @@ device.
   yanjie config. That run does one −1 to 2.5 V scan per device and no main sweep, at Vd = 50 mV on SMU4, with the
   gate on SMU1. When the CSVs are generated, the script checks that every printed label shape belongs to exactly
   one extracted L or W value, and the reverse.
+- `measure.sample_devices` with a synthetic data folder: every site measured in exactly 3 blocks, scanned
+  devices never picked again, the blocks within one device of each other, the same picks for the same seed. The
+  committed yanjie sample is tested too: 535 devices, the first one the device the probes were left on.
 - `make e2e`: a user in Chromium previews and dry-runs 3 devices and sees 3 rows, 3 green devices and the curve.
 
 ## Where the backend/frontend boundary is

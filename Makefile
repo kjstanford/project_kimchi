@@ -16,7 +16,7 @@ PY ?= python
 GDS_PY ?= python
 
 .DEFAULT_GOAL := help
-.PHONY: help build up down verify clean test lint fmt smoke e2e logs shell lock up-live run-cli notify-test plot-idvg box-idvg plot-stress plot-gc-ret layout-localbg-v5
+.PHONY: help build up down verify clean test lint fmt smoke e2e logs shell lock up-live run-cli notify-test plot-idvg box-idvg plot-stress plot-gc-ret layout-localbg-v5 sample-devices
 
 help: ## list the targets
 	@awk 'BEGIN {FS = ":.*## "} /^##@/ {printf "\n%s\n", substr($$0, 5)} /^[a-z0-9-]+:.*## / {printf "  %-10s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -72,6 +72,9 @@ plot-stress: ## every PMU stress run's dVt (stress + recovery) on one figure, e.
 
 plot-gc-ret: ## every 4200A gain-cell retention run (PMU + SMU) on one figure, e.g. ARGS="--out .pptx_figs/wd_bobafet"
 	$(RUN) python -B -m measure.plot_gc_ret_all $(ARGS)
+
+sample-devices: ## a random device subset, every site in N blocks, e.g. ARGS="--config ... --per-site 3 --include TR-R01C14 --out configs/..._devices.csv"
+	$(RUN) python -B -m measure.sample_devices $(ARGS)
 
 shell: ## a shell inside the container
 	$(COMPOSE) run --rm --no-deps app bash
