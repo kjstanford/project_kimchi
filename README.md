@@ -106,6 +106,10 @@ SMU4, source on SMU2. It runs only the initial scan, −1 to 2.5 V in 50 mV step
 on `TL-R01C01` first: the top-left transistor of the die, labelled 70 (L) and 100 (W). The run then goes left
 to right along row 1, then back along row 2. For another block, copy the config and change `device_csv` and
 `origin_device`, for example to `layouts/localbg_v5_R1_MC.csv` and `MC-R01C01`.
+`configs/yanjie_in203_110cycleHfO2_R1_all_idvg.json` runs all six blocks in one run (1260 devices, about 18 h
+at roughly 53 s per device). Its serpentine covers the whole die: each row runs through the blocks side by side
+(TL with TR, ML with MC, BC with BR), and the 3.85 mm step over the contact-study block between TL and TR is
+split into hops. Devices already scanned are skipped, so it carries on from a TL-only run.
 
 Regenerate the CSVs after a layout change, on a PC with the `gds` env (the script stops if any of its checks
 fails):

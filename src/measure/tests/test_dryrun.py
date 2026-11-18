@@ -524,6 +524,20 @@ def test_localbg_v5_region1_map():
     assert abs(on(rows[0]['scan_file']) / on(rows[1]['scan_file']) - 0.08 / 0.07) < 0.02
     plan, _ = run_map.build_plan(cfg, limit=1, origin='TL-R01C03', data_dir=DATA)
     assert plan[0]['key'] == 'TL-R01C04' and (plan[0]['dx'], plan[0]['dy']) == (250, 0), plan[0]   # resume
+
+    # all six blocks in one run: one serpentine over the die, a row runs through the blocks side by side
+    cfg_all = json.load(open('configs/yanjie_in203_110cycleHfO2_R1_all_idvg.json'))
+    assert {k: v for k, v in cfg_all.items() if k != 'device_csv'} == {k: v for k, v in cfg.items() if k != 'device_csv'}
+    plan, _ = run_map.build_plan({**cfg_all, 'repeat_measurement': True}, data_dir=DATA)
+    keys = [p['key'] for p in plan]
+    assert len(keys) == len(set(keys)) == 6 * 210 and keys[0] == 'TL-R01C01' and keys[-1] == 'BR-R15C14', keys[-1]
+    assert keys[13:16] == ['TL-R01C14', 'TR-R01C01', 'TR-R01C02'] and keys[27:30] == ['TR-R01C14', 'TR-R02C14', 'TR-R02C13']
+    assert (plan[14]['dx'], plan[14]['dy'], plan[14]['hops']) == (3850, 0, 2), plan[14]   # over the contact-study block
+    first = {b: keys.index(f'{b}-R01C01') for b in BLOCKS}
+    assert sorted(first, key=first.get) == ['TL', 'TR', 'MC', 'ML', 'BC', 'BR'], first   # die row 16 runs right -> left
+    # resume across blocks: from a TL device, the TL scans above are skipped, the other blocks are all still to do
+    plan, _ = run_map.build_plan(cfg_all, origin='TL-R01C03', data_dir=DATA)
+    assert len(plan) == 6 * 210 - 3 and plan[0]['key'] == 'TL-R01C04', plan[0]['key']
     print("test_localbg_v5_region1_map OK")
 
 
