@@ -53,9 +53,9 @@ reviewer-check: ## a reviewer's path, no lab: fresh clone of the pushed BRANCH, 
 	# the clone gets its own compose project and none of this checkout's .env settings (mail credentials, PORT)
 	cd $(REVIEW_DIR) && env -u COMPOSE_PROJECT_NAME -u PORT -u NOTIFY_SMTP_USER -u NOTIFY_SMTP_PASSWORD -u NOTIFY_EMAIL_TO -u NOTIFY_EMAIL_FROM sh -c '\
 	  git log -1 --format="reviewer-check at %h (%s)" && \
-	  $(MAKE) build && $(MAKE) verify && $(MAKE) up && $(MAKE) down && \
-	  $(MAKE) dry-run ARGS="--config configs/lc500_idvg.json --limit 3" && \
-	  $(MAKE) clean'
+	  "$(MAKE)" build && "$(MAKE)" verify && "$(MAKE)" up && "$(MAKE)" down && \
+	  "$(MAKE)" dry-run ARGS="--config configs/lc500_idvg.json --limit 3" && \
+	  "$(MAKE)" clean'
 	rm -rf $(REVIEW_DIR)
 
 ##@ While developing
