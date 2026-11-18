@@ -121,7 +121,8 @@ pr: ## open a pull request BRANCH -> main (never merges), e.g. make pr TITLE="..
 
 pr-status: ## the pull request of BRANCH: title, state, link and description
 	@test -n "$$GH_TOKEN" || { echo "refusing: GH_TOKEN is not set in .env (see .env.example)"; exit 2; }
-	$(GH) pr view "$(BRANCH)"
+	$(GH) pr view "$(BRANCH)" --json number,title,state,isDraft,mergeable,reviewDecision,url --jq \
+	  '"#\(.number) \(.title)\nstate: \(.state)\(if .isDraft then " (draft)" else "" end), mergeable: \(.mergeable), review: \(if (.reviewDecision // "") == "" then "none yet" else .reviewDecision end)\n\(.url)"'
 
 ##@ Lab PC only (native, in the qcodes env: the only way to reach GPIB)
 up-live: ## the app with LIVE runs allowed, on 127.0.0.1 (make up-live PY=".../envs/qcodes/python.exe")
