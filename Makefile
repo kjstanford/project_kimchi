@@ -12,9 +12,11 @@ RUN := $(COMPOSE) run --rm --no-deps app
 PORT ?= 8300
 # Lab PC only: the qcodes env's python, with its DLL dirs on PATH (see AGENTS.md)
 PY ?= python
+# Lab PC only: the gds env's python (KLayout), for the layout CSV scripts
+GDS_PY ?= python
 
 .DEFAULT_GOAL := help
-.PHONY: help build up down verify clean test lint fmt smoke e2e logs shell lock up-live run-cli notify-test
+.PHONY: help build up down verify clean test lint fmt smoke e2e logs shell lock up-live run-cli notify-test plot-idvg box-idvg plot-stress plot-gc-ret layout-localbg-v5 sample-devices
 
 help: ## list the targets
 	@awk 'BEGIN {FS = ":.*## "} /^##@/ {printf "\n%s\n", substr($$0, 5)} /^[a-z0-9-]+:.*## / {printf "  %-10s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -59,6 +61,21 @@ e2e: ## a user in Chromium previews and dry-runs 3 devices
 logs: ## follow the app's output
 	$(COMPOSE) logs -f app
 
+plot-idvg: ## every device's Id-Vg on one figure, |Id|*L/W coloured by L, e.g. ARGS="--sample wd_bobafet_6802 --out .pptx_figs/wd_bobafet"
+	$(RUN) python -B -m measure.plot_idvg_all $(ARGS)
+
+box-idvg: ## box plots of VT, muFE, SS per L, e.g. ARGS="--samples wd_bobafet_6802 wd_bobafet_6916 --out .pptx_figs/wd_bobafet"
+	$(RUN) python -B -m measure.idvg_metrics_box $(ARGS)
+
+plot-stress: ## every PMU stress run's dVt (stress + recovery) on one figure, e.g. ARGS="--out .pptx_figs/wd_bobafet"
+	$(RUN) python -B -m measure.plot_stress_all $(ARGS)
+
+plot-gc-ret: ## every 4200A gain-cell retention run (PMU + SMU) on one figure, e.g. ARGS="--out .pptx_figs/wd_bobafet"
+	$(RUN) python -B -m measure.plot_gc_ret_all $(ARGS)
+
+sample-devices: ## a random device subset, every site in N blocks, e.g. ARGS="--config ... --per-site 3 --include TR-R01C14 --out configs/..._devices.csv"
+	$(RUN) python -B -m measure.sample_devices $(ARGS)
+
 shell: ## a shell inside the container
 	$(COMPOSE) run --rm --no-deps app bash
 
@@ -76,3 +93,7 @@ run-cli: ## the measurement CLI, e.g. make run-cli PY=... ARGS="--config configs
 
 notify-test: ## send one test email with the NOTIFY_* settings in .env (live runs email when they end)
 	PYTHONPATH=src "$(PY)" -B -m measure.notify --test
+
+##@ Lab PC only, layouts (native, in the gds env: KLayout reads the GDS)
+layout-localbg-v5: ## device CSVs of the localBG v5 die's TFT_region1 blocks (make layout-localbg-v5 GDS_PY=".../envs/gds/python.exe")
+	"$(GDS_PY)" -B layouts/make_localbg_v5_csv.py

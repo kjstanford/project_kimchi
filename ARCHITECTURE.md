@@ -10,11 +10,16 @@ are in `docs/`, one short file each; the departures from the course specificatio
   instruments for dry-runs) and its CLI, `measure.run_map`. Its dry-run suite runs under pytest.
   `measure.notify` emails the end of each live run, and failure streaks, over SMTP, with its settings in `.env`
   (docs/0004-email-notifications.md).
+  `measure.plot_idvg_all` (`make plot-idvg`) draws a die's saved Id-Vg curves on one figure, into `.pptx_figs/`.
+  `measure.idvg_metrics_box` (`make box-idvg`, with the VTR extraction in `measure.tr_extraction`),
+  `measure.plot_stress_all` (`make plot-stress`) and `measure.plot_gc_ret_all` (`make plot-gc-ret`) make the other
+  slide figures from saved data, into `.pptx_figs/` too. `measure.sample_devices` (`make sample-devices`)
+  picks a balanced random subset of a multi-block device map for a shorter run.
 - `src/app/` and `src/web/`: the web app. Check a config, preview its probe plan on the stage map, dry-run it on
   the fake instruments (or, on the lab PC only, run it live behind two typed confirmations), follow the run
   live, and browse saved data as interactive plots.
 - `docker/`, `Makefile`: the development container and every command, as specified below. `make verify` is green
-  (lint, 67 tests, smoke); `make e2e` drives the page in Chromium.
+  (lint, 91 tests, smoke); `make e2e` drives the page in Chromium.
 - Not built yet: an analysis page (Vt roll-off, TLM Rc·W from `measure.anneal_series`) and default plot axes for
   the gain-cell PMU and stress-staircase files.
 
@@ -42,11 +47,15 @@ docker/              everything that builds the development container, and nothi
 src/app/             the backend: api.py (routes only), pipeline.py, models.py, runs.py, __main__.py
 src/web/             the page: index.html, app.js, styles.css
 src/measure/         the measurement package and its CLI (docs/0002-measure-in-src.md)
-tests/               pytest (test_pipeline, test_runs, test_api, test_measure_dryrun), smoke.py, e2e.mjs
+tests/               pytest (test_pipeline, test_runs, test_api, test_measure_dryrun, test_plot_idvg,
+                     test_idvg_metrics_box, test_plot_stress_all, test_plot_gc_ret_all, test_sample_devices),
+                     smoke.py, e2e.mjs
 docs/                decisions worth remembering, one short file each
 configs/             run configs (JSON), one per sample / die / experiment
-layouts/             device CSVs from the mask layouts, and the scripts that make them (gds env)
+layouts/             device CSVs from the mask layouts, and the scripts that make them (gds env);
+                     the GDS files themselves are gitignored
 data/ data_k4200/ data_k4200_stress/   measurement output, gitignored, never modified by any task
+.pptx_figs/          figures for slides, gitignored
 Makefile  README.md  ARCHITECTURE.md  AGENTS.md  CLAUDE.md
 .gitignore  .env.example  ruff.toml  pytest.ini
 ```
@@ -97,7 +106,8 @@ Makefile  README.md  ARCHITECTURE.md  AGENTS.md  CLAUDE.md
   `docker/package-lock.json`. `build` uses only the locks, and says so, with this instruction, when a manifest
   and its lock disagree.
 - Lab PC only: `up-live`, `run-cli` and `notify-test` (one test email from the `.env` settings), native, with `PY`
-  the `qcodes` env's python (quoted in the recipes, so a path with spaces works).
+  the `qcodes` env's python (quoted in the recipes, so a path with spaces works). `layout-localbg-v5` writes the
+  localBG v5 device CSVs from the GDS, with `GDS_PY` the `gds` env's python (KLayout).
 
 Every container target runs through compose (`docker compose -f docker/compose.yaml`).
 
