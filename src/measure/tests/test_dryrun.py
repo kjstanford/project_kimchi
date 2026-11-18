@@ -460,6 +460,73 @@ def test_k4200_map():
     print("test_k4200_map OK")
 
 
+def test_localbg_v5_region1_map():
+    """localBG v5 EBL die, TFT_region1 blocks (layouts/make_localbg_v5_csv.py): the L x W matrix as printed on the
+    mask, the six blocks on the 3550 x 2850 um block grid, the serpentine over one block, and the
+    yanjie_in203_110cycleHfO2 config: initial scan only, -1 -> 2.5 V at Vd = 0.05 V, gate smu1, drain smu4,
+    source smu2."""
+    import pandas as pd
+    shutil.rmtree(DATA, ignore_errors=True)
+    L_COL = [0.07, 0.08, 0.09, 0.1, 0.12, 0.14, 0.16, 0.18, 0.2, 0.25, 0.3, 0.5, 1.0, 2.0]   # um, columns 1-14
+    W_ROW = [0.1, 0.2, 0.5, 0.014, 0.018, 0.02, 0.022, 0.024, 0.03, 0.05, 0.08, 1.0, 5.0, 10.0]   # um, rows 1-14
+    L_ROW14 = [0.08, 0.09, 0.1, 0.11] + L_COL[4:]
+    L_ROW15, W_ROW15 = [0.07, 0.08, 0.09] * 4 + [0.07, 0.08], [0.014] * 3 + [0.018] * 3 + [0.02] * 3 + [0.024] * 3 + [0.03] * 2
+    BLOCKS = {'TL': (2300, 11650), 'TR': (9400, 11650), 'ML': (2300, 8800), 'MC': (5850, 8800),
+              'BC': (5850, 5950), 'BR': (9400, 5950)}
+    tl = pd.read_csv('layouts/localbg_v5_R1_TL.csv').set_index(['Row', 'Column'])
+    for reg, (bx, by) in BLOCKS.items():
+        path = f'layouts/localbg_v5_R1_{reg}.csv'
+        full = dm.load_devices(path)
+        assert len(full) == 210 and full['key'].str.startswith(f'{reg}-R').all(), path
+        d = pd.read_csv(path).set_index(['Row', 'Column'])
+        assert d.index.equals(pd.MultiIndex.from_product([range(1, 16), range(1, 15)])), path
+        for r in range(1, 16):
+            row = d.loc[r]
+            L = L_ROW15 if r == 15 else L_ROW14 if r == 14 else L_COL
+            W = W_ROW15 if r == 15 else [W_ROW[r - 1]] * 14
+            assert row['L in um'].tolist() == L and row['W in um'].tolist() == W, (path, r)
+        # same block, placed at its own grid position
+        assert ((d['x in um'] - tl['x in um']).round(3) == bx - 2300).all(), path
+        assert ((d['y in um'] - tl['y in um']).round(3) == by - 11650).all(), path
+    x, y = tl['x in um'].unstack(), tl['y in um'].unstack()
+    assert (x.diff(axis=1).iloc[:, 1:].round(3) == 250).all().all() and (y.nunique(axis=1) == 1).all()
+    assert y[1].diff().iloc[1:].round(2).tolist() == [-185.0] * 12 + [-186.18, -183.82], y[1].tolist()
+    # three pads per device: S/D level with the pads' centre line, the gate pad below the channel
+    assert tl['sd1_pad_dx in um'].between(-79.01, -78.03).all() and (tl['sd2_pad_dx in um'] == -tl['sd1_pad_dx in um']).all()
+    assert tl['gate_pad_dx in um'].eq(0).all() and tl['gate_pad_dy in um'].between(-94.01, -90.18).all()
+
+    cfg = json.load(open('configs/yanjie_in203_110cycleHfO2_R1_TL_idvg.json'))
+    m = cfg['measurement']
+    assert m['scan_only'] and (m['default_start'], m['default_stop'], m['Vd_scan']) == (-1.0, 2.5, 0.05)
+    assert cfg['origin_device'] == 'TL-R01C01'        # the top-left transistor of the die
+    plan, _ = run_map.build_plan(cfg, limit=16, data_dir=DATA)
+    # top row (1) left -> right from the origin, then row 2 right -> left
+    assert [p['key'] for p in plan] == [f'TL-R01C{c:02d}' for c in range(1, 15)] + ['TL-R02C14', 'TL-R02C13']
+    steps = [(round(p['dx'], 3), round(p['dy'], 3)) for p in plan]
+    assert steps == [(0, 0)] + [(250, 0)] * 13 + [(0, -185), (-250, 0)], steps
+
+    rows, bench = run_map.run(cfg, data_dir=DATA, limit=3)
+    assert [r['key'] for r in rows] == ['TL-R01C01', 'TL-R01C02', 'TL-R01C03']
+    folder = os.path.join(DATA, 'yanjie_in203_110cycleHfO2', '0_0', 'TL-R01C01')
+    for r in rows:
+        assert r['status'] == 'measured' and r['main_file'] is None and os.path.isfile(r['scan_file']), r
+    assert rows[0]['scan_file'].endswith('_yanjie_in203_110cycleHfO2_0_0_TL-R01C01_W0.1_L0.07.csv')
+    assert os.path.dirname(rows[0]['scan_file']) == folder and (rows[0]['W_um'], rows[0]['L_um']) == (0.1, 0.07)
+    assert not any(f.startswith('IdVg_main_') for f in os.listdir(folder))
+    b = cmds(bench, 'B1500')
+    wv = [c for c in b if c.startswith('WV ')]
+    assert len(wv) == 3 and {c.split(',')[0] for c in wv} == {'WV 3'}, wv      # one scan per device, gate = smu1
+    assert {tuple(c.split(',')[2:4]) for c in wv} == {('-1.0', '2.5')}, wv
+    assert {float(c.split(',')[1]) for c in b if c.startswith('DV 6,')} == {0.05}     # drain = smu4
+    assert {float(c.split(',')[1]) for c in b if c.startswith('DV 4,')} == {0.0}      # source = smu2
+    # per-device W/L reaches the (fake) device: W/L 0.1/0.07 vs 0.1/0.08
+    on = lambda f: pd.read_csv(f)['Drain_Current'].abs().max()
+    assert abs(on(rows[0]['scan_file']) / on(rows[1]['scan_file']) - 0.08 / 0.07) < 0.02
+    plan, _ = run_map.build_plan(cfg, limit=1, origin='TL-R01C03', data_dir=DATA)
+    assert plan[0]['key'] == 'TL-R01C04' and (plan[0]['dx'], plan[0]['dy']) == (250, 0), plan[0]   # resume
+    print("test_localbg_v5_region1_map OK")
+
+
 def test_gc_map_scan_only():
     """Gain-cell FETs (layouts/igzo_v6_GC_FETs.csv) combined with the 3T map, so the origin can be a 3T FET;
     measurement.scan_only runs the initial scan only (no main sweep) and resume still works."""
@@ -1924,6 +1991,7 @@ def test_drift_limit():
 TESTS = [test_full_map, test_resume, test_fault_cleanup, test_keyboard_interrupt,
              test_dead_device_screened, test_limits_and_origin, test_chuck_drift_guard,
              test_fmt21_parse, test_fault_devices_and_compliance, test_igzo_v6_device_id_map,
+             test_localbg_v5_region1_map,
              test_drift_correction, test_long_move_hops_keep_order, test_multi_segment_run, test_drift_limit,
              test_max_id_scales_with_WL,
              test_k4200_map, test_gc_map_scan_only, test_gc_wbl_sweep, test_gc_wwl_sweep, test_gc_retention,
