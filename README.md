@@ -86,6 +86,34 @@ make notify-test PY="$E/python.exe"
 A run logs whether email is on, and every email it sends or fails to send. A failed send never stops a run. No email
 is sent if the process dies: a closed terminal window, a power cut, or a killed process.
 
+### The localBG v5 EBL die (yanjie_in203_110cycleHfO2)
+
+`layouts/250405_localBG_v5_different_contact_with_big_pads.GDS` is a 15 × 15 mm die of local-bottom-gate
+transistors. Each has three 80 µm pads: source and drain left and right of the channel (symmetric), and the gate
+below it. Nine blocks sit on a 3 × 3 grid. The six `TFT_region1` blocks are an L × W matrix, and the device CSVs
+cover only these:
+
+- **Grid:** 15 rows (1 = top) by 14 columns (1 = left), 250 µm apart in x and 185 µm in y. There is one CSV per
+  block, `layouts/localbg_v5_R1_<block>.csv`, where the block is named by its place on the die: TL, TR, ML, MC,
+  BC or BR.
+- **Device ids:** `<block>-R<row>C<column>`, e.g. `TL-R01C01`, the top-left device of the top-left block.
+- **L, by column:** 70, 80, 90, 100, 120, 140, 160, 180, 200, 250, 300, 500, 1000 and 2000 nm.
+- **W, by row:** 100, 200, 500, 14, 18, 20, 22, 24, 30, 50 and 80 nm, then 1, 5 and 10 µm. Row 15 mixes the
+  small Ws with L of 70, 80 and 90 nm. The mask prints L under the left pad and W under the right one.
+
+`configs/yanjie_in203_110cycleHfO2_R1_TL_idvg.json` measures the TL block on the B1500A: gate on SMU1, drain on
+SMU4, source on SMU2. It runs only the initial scan, −1 to 2.5 V in 50 mV steps at Vd = 50 mV. Land the probes
+on `TL-R01C01` first: the top-left transistor of the die, labelled 70 (L) and 100 (W). The run then goes left
+to right along row 1, then back along row 2. For another block, copy the config and change `device_csv` and
+`origin_device`, for example to `layouts/localbg_v5_R1_MC.csv` and `MC-R01C01`.
+
+Regenerate the CSVs after a layout change, on a PC with the `gds` env (the script stops if any of its checks
+fails):
+
+```bash
+make layout-localbg-v5 GDS_PY="$HOME/anaconda3/envs/gds/python.exe"
+```
+
 ## Plots from saved data
 
 `make plot-idvg` draws every device of one die on one figure: the newest main sweep of each device (initial scans
@@ -125,7 +153,7 @@ device.
 
 ## Checks
 
-`make verify` is the gate (lint, 86 tests, smoke, about 6 min). None of the tests can reach an instrument: every
+`make verify` is the gate (lint, 87 tests, smoke, about 6 min). None of the tests can reach an instrument: every
 `connect()` is replaced by a failure.
 
 - Differential, with the CLI as answer key: the web plan equals `run_map.build_plan` (order, count, summed
@@ -134,7 +162,7 @@ device.
 - Safety: live refused without `--allow-live` or off localhost; a gate accepts only the right typed text; Stop at
   a gate answers no; a declined live gate never connects; Stop mid-run separates the probes; an open device is
   reported, not fatal.
-- The measurement package's own 37 dry-run tests, in Python 3.14. These include the notification emails: their
+- The measurement package's own 38 dry-run tests, in Python 3.14. These include the notification emails: their
   content at each kind of run end, one alert per failure streak, a failing sender that leaves the run alone, and
   the password never appearing in a log.
 - `measure.plot_idvg_all` on a synthetic die: only the newest main sweep per device, only the chosen Vd, |Id|·L/W
@@ -144,6 +172,11 @@ device.
   never turns on gives NaN; only cycle 1, forward, the chosen Vd and the newest file are used.
 - `measure.plot_stress_all` and `measure.plot_gc_ret_all` on synthetic dies: the right Vt table per run, the
   pre-stressed runs left out, ΔVT drawn in mV; SMU read current = −RBL_Current, retention rows only, t = 0 left out.
+- The localBG v5 CSVs against the L × W matrix printed on the mask, typed in by hand. The test also checks the
+  six blocks' positions, the serpentine (250 µm along a row, then up a row), and a 3-device dry run of the
+  yanjie config. That run does one −1 to 2.5 V scan per device and no main sweep, at Vd = 50 mV on SMU4, with the
+  gate on SMU1. When the CSVs are generated, the script checks that every printed label shape belongs to exactly
+  one extracted L or W value, and the reverse.
 - `make e2e`: a user in Chromium previews and dry-runs 3 devices and sees 3 rows, 3 green devices and the curve.
 
 ## Where the backend/frontend boundary is

@@ -18,7 +18,7 @@ are in `docs/`, one short file each; the departures from the course specificatio
   the fake instruments (or, on the lab PC only, run it live behind two typed confirmations), follow the run
   live, and browse saved data as interactive plots.
 - `docker/`, `Makefile`: the development container and every command, as specified below. `make verify` is green
-  (lint, 86 tests, smoke); `make e2e` drives the page in Chromium.
+  (lint, 87 tests, smoke); `make e2e` drives the page in Chromium.
 - Not built yet: an analysis page (Vt roll-off, TLM Rc·W from `measure.anneal_series`) and default plot axes for
   the gain-cell PMU and stress-staircase files.
 
@@ -50,7 +50,8 @@ tests/               pytest (test_pipeline, test_runs, test_api, test_measure_dr
                      test_idvg_metrics_box, test_plot_stress_all, test_plot_gc_ret_all), smoke.py, e2e.mjs
 docs/                decisions worth remembering, one short file each
 configs/             run configs (JSON), one per sample / die / experiment
-layouts/             device CSVs from the mask layouts, and the scripts that make them (gds env)
+layouts/             device CSVs from the mask layouts, and the scripts that make them (gds env);
+                     the GDS files themselves are gitignored
 data/ data_k4200/ data_k4200_stress/   measurement output, gitignored, never modified by any task
 .pptx_figs/          figures for slides, gitignored
 Makefile  README.md  ARCHITECTURE.md  AGENTS.md  CLAUDE.md
@@ -103,7 +104,8 @@ Makefile  README.md  ARCHITECTURE.md  AGENTS.md  CLAUDE.md
   `docker/package-lock.json`. `build` uses only the locks, and says so, with this instruction, when a manifest
   and its lock disagree.
 - Lab PC only: `up-live`, `run-cli` and `notify-test` (one test email from the `.env` settings), native, with `PY`
-  the `qcodes` env's python (quoted in the recipes, so a path with spaces works).
+  the `qcodes` env's python (quoted in the recipes, so a path with spaces works). `layout-localbg-v5` writes the
+  localBG v5 device CSVs from the GDS, with `GDS_PY` the `gds` env's python (KLayout).
 
 Every container target runs through compose (`docker compose -f docker/compose.yaml`).
 
