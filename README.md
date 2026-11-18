@@ -29,6 +29,23 @@ Open http://127.0.0.1:8300/ (the API contract is at /docs). `make down` stops it
 
 In the container the app is **dry-run only**: fake instruments, data written to `.ignore/web_dryrun/`.
 
+### Without the lab
+
+You don't need a probe station, an analyzer, a licence or mail settings to try everything except a live run.
+After the three commands above:
+
+- **The web app** (`make up`) runs the whole flow on the fake instruments: pick a config, preview the plan,
+  dry-run it, then open the curves under Data.
+- **The CLI** is `make dry-run ARGS="--config configs/lc500_idvg.json --limit 3"`. It does the same on the fakes
+  and writes to `.ignore/cli_dryrun/`.
+- **`make verify`** checks the lot (lint, every test, a smoke run).
+
+**Needs the lab PC:** `up-live`, `run-cli`, `notify-test` and `layout-localbg-v5`. They run natively with the lab's
+conda envs, because Docker cannot reach GPIB.
+
+`make reviewer-check` repeats a reviewer's path from a fresh clone of the pushed branch, in
+`.ignore/reviewer_clone/`. It runs build, verify, up, a CLI dry run and clean, then deletes the clone.
+
 ## What the page does
 
 | Tab | What you see |

@@ -50,13 +50,13 @@ src/measure/         the measurement package and its CLI (docs/0002-measure-in-s
 tests/               pytest (test_pipeline, test_runs, test_api, test_measure_dryrun, test_plot_idvg,
                      test_idvg_metrics_box, test_plot_stress_all, test_plot_gc_ret_all, test_sample_devices),
                      smoke.py, e2e.mjs
-docs/                decisions worth remembering, one short file each
+docs/                decisions worth remembering, one short file each, plus the capstone check-in (check-in.md)
 configs/             run configs (JSON), one per sample / die / experiment
 layouts/             device CSVs from the mask layouts, and the scripts that make them (gds env);
                      the GDS files themselves are gitignored
 data/ data_k4200/ data_k4200_stress/   measurement output, gitignored, never modified by any task
 .pptx_figs/          figures for slides, gitignored
-Makefile  README.md  ARCHITECTURE.md  AGENTS.md  CLAUDE.md
+Makefile  README.md  ARCHITECTURE.md  AGENTS.md  CLAUDE.md  PROMPT.md (the specification)
 .gitignore  .env.example  ruff.toml  pytest.ini
 ```
 
@@ -101,7 +101,10 @@ Makefile  README.md  ARCHITECTURE.md  AGENTS.md  CLAUDE.md
   Make and git), `clean` (this project's containers and images, test and dry-run output; `data*/` and `.env`
   are kept, and so are shared base images and build cache).
 - While developing: `test` (`ARGS=` for a subset), `lint`, `fmt`, `smoke` (starts the app, checks a real
-  preview: 144 sites, A:2 B:2 C:2, 400 µm of travel, Plotly served), `e2e`, `logs`, `shell`.
+  preview: 144 sites, A:2 B:2 C:2, 400 µm of travel, Plotly served), `e2e`, `logs`, `shell`, `dry-run` (the CLI
+  on the fake instruments, into `.ignore/cli_dryrun/`; it refuses `--live`), `reviewer-check` (a fresh clone of
+  the pushed branch in `.ignore/reviewer_clone/`: build, verify, up, dry-run, clean, with no lab and no mail
+  settings; the clone gets its own compose project).
 - Only when dependencies change: `lock` records exact versions in `docker/uv.lock` and
   `docker/package-lock.json`. `build` uses only the locks, and says so, with this instruction, when a manifest
   and its lock disagree.
