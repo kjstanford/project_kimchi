@@ -8,6 +8,7 @@ from that formula, not by running the code under test.
 import shutil
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pytest
@@ -134,3 +135,89 @@ def test_main_refuses_out_in_data_and_no_data(samples):
         box.main(["--samples", "sA", "--data-dir", str(samples), "--out", "data/x"])
     with pytest.raises(SystemExit):
         box.main(["--samples", "sA", "--data-dir", str(samples), "--vd", "0.7", "--out", str(TMP / "out")])
+
+
+def _write_scan(path: Path, vt=1.0):
+    """A screening-scan file as a run writes it: one forward-then-backward sweep, no Drain_Voltage or Cycle column.
+
+    The backward branch is shifted by 0.3 V, so reading it instead of the forward one shows."""
+    rows = [
+        {"Drain_Current": -device(vg, vt + (0.3 if back else 0.0)), "Gate_Current": 1e-13, "Gate_Voltage": vg}
+        for vg, back in [(v, False) for v in VG] + [(v, True) for v in VG[::-1]]
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_csv(path, index=False)
+
+
+def _write_summary(path: Path, rows: list[tuple[str, str, str]]):
+    """A run summary with the columns measured_devices reads: (time, key, status) rows."""
+    pd.DataFrame(rows, columns=["time", "key", "status"]).to_csv(path, index=False)
+
+
+@pytest.fixture
+def scan_die():
+    """sC/0_0: A measured, B screened out, C screened out in the older run and measured in the newer one.
+
+    A also has a main sweep with another VT, so reading it instead of the scan shows."""
+    shutil.rmtree(TMP, ignore_errors=True)
+    d = TMP / "data"
+    die = d / "sC/0_0"
+    _write_scan(die / "A/IdVg_initial_scan_20260101_000000_sC_0_0_A_W10_L1.csv", vt=1.0)
+    _write_main(die / "A/IdVg_main_20260101_000100_sC_0_0_A_W10_L1.csv", fwd_vt=0.2)
+    _write_scan(die / "B/IdVg_initial_scan_20260101_000200_sC_0_0_B_W10_L1.csv", vt=1.0)
+    _write_scan(die / "C/IdVg_initial_scan_20260102_000000_sC_0_0_C_W10_L1.csv", vt=1.5)
+    _write_summary(
+        die / "summary_20260101_000000.csv",
+        [
+            ("2026-01-01 00:00:10", "A", "measured"),
+            ("2026-01-01 00:02:10", "B", "screened_out"),
+            ("2026-01-01 00:03:10", "C", "screened_out"),
+        ],
+    )
+    _write_summary(die / "summary_20260102_000000.csv", [("2026-01-02 00:00:10", "C", "measured")])
+    yield d
+    shutil.rmtree(TMP, ignore_errors=True)
+
+
+def test_collect_scan_keeps_only_measured_devices(scan_die):
+    df = box.collect(scan_die, ["sC"], "0_0", VD, COX, exclude_L=[10.0], id_limit=1e-11, scan=True)
+    assert df["device"].tolist() == ["A", "C"]  # B screened out; C measured in the newer run
+    a, c = df.iloc[0], df.iloc[1]
+    assert a["file"].startswith("IdVg_initial_scan_")  # the scan, not A's main sweep
+    assert a["VT_V"] == pytest.approx(VT_CC, abs=5e-3)  # forward branch (backward is +0.3 V)
+    assert c["VT_V"] == pytest.approx(VT_CC + 0.5, abs=5e-3)
+    assert a["SS_mVdec"] == pytest.approx(150, rel=0.01)
+    assert a["VTon_V"] == pytest.approx(VTON, abs=0.01) and a["VToff_V"] == pytest.approx(VTOFF, abs=0.01)
+
+
+def test_main_scan_names_its_output(scan_die):
+    out = TMP / "out"
+    box.main(["--samples", "sC", "--data-dir", str(scan_die), "--scan", "--out", str(out)])
+    assert (out / "metrics_sC_scan_0_0_Vd0.05.csv").is_file()
+    assert all((out / f"box_{m}_sC_scan_0_0_Vd0.05.png").is_file() for m in box.METRICS)
+
+
+def test_collect_scan_refuses_a_die_without_summaries(scan_die):
+    for p in (scan_die / "sC/0_0").glob("summary_*.csv"):
+        p.unlink()
+    with pytest.raises(ValueError, match="summary"):
+        box.collect(scan_die, ["sC"], "0_0", VD, COX, exclude_L=[], scan=True)
+
+
+def test_box_labels_each_length_when_more_than_the_palette(monkeypatch):
+    lengths = [0.07, 0.08, 0.09, 0.1, 0.11, 0.12, 0.14, 0.16, 0.18, 0.2, 0.25, 0.3, 0.5, 1.0, 2.0]
+    assert len(lengths) > len(box.PALETTE)
+    df = pd.DataFrame([{"sample": "s", "L": L, "VT_V": 0.5 + 0.01 * k} for L in lengths for k in range(3)])
+    figs, close = [], plt.close
+    monkeypatch.setattr(box.plt, "close", figs.append)  # keep the figure to inspect it
+    png = box.box(df, "VT_V", TMP / "many_L.png", font_scale=1.0, note="screening scan")
+    try:
+        assert png.is_file()
+        ax = figs[0].axes[0]
+        assert ax.get_legend() is None
+        assert [t.get_text() for t in ax.get_xticklabels()] == [f"{L:g}" for L in lengths]
+        assert "(screening scan)" in ax.get_xlabel()
+    finally:
+        for f in figs:
+            close(f)
+        shutil.rmtree(TMP, ignore_errors=True)
