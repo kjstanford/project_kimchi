@@ -169,7 +169,10 @@ The other figures for slides, all into `--out` and nothing else:
   SS (steepest 3-point fit above 10 pA) and VTR = VT,on − VT,off (`measure.tr_extraction.extract_VTR`, raw-Id
   method, K. Jana et al. Eqs. 6-9), from the forward branch of cycle 1 of each device's newest main sweep, plus a
   per-device CSV. The raw-Id VT,on is biased low by series resistance (the test shows it); `extract_VTR` also has
-  the Y-function method for that, which the box plot does not use.
+  the Y-function method for that, which the box plot does not use. For a scan-only run (`"scan_only": true`, no
+  main sweeps), `--scan` reads each device's newest initial screening scan instead, keeps only the devices whose
+  newest row in the die's `summary_*.csv` is `measured`, takes the scan's drain voltage to be `--vd` (the config's
+  `Vd_scan`), and names its output `*_scan_*`. With more lengths than the 8 colours, each box is labelled with its L.
 - `make plot-stress`: ΔVT of every PMU stress-staircase run on a die (`data_k4200_stress/`), stress and 0 V
   recovery, relative to each run's own reference staircase. Runs on pre-stressed devices (a device with several
   runs, or a `WARNING_*already_stressed` file) are left out unless `--include-repeats`.
@@ -178,6 +181,7 @@ The other figures for slides, all into `--out` and nothing else:
 
 ```bash
 make box-idvg ARGS="--samples wd_bobafet_6802 wd_bobafet_6916 --out .pptx_figs/wd_bobafet"   # --die 0_0 --vd 0.05 --exclude-L 10
+make box-idvg ARGS="--samples MY_SAMPLE --scan --out .pptx_figs/MY_SAMPLE"   # a scan-only run
 make plot-stress ARGS="--out .pptx_figs/wd_bobafet"    # --sample wd_bobafet_6916 --die 0_0 --include-repeats
 make plot-gc-ret ARGS="--out .pptx_figs/wd_bobafet"    # --sample wd_bobafet_6916 --die 0_0
 ```
