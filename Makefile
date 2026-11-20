@@ -20,7 +20,7 @@ BRANCH ?= $(shell git rev-parse --abbrev-ref HEAD)
 REVIEW_DIR := .ignore/reviewer_clone
 
 .DEFAULT_GOAL := help
-.PHONY: help build up down verify clean test lint fmt smoke e2e logs shell lock up-live run-cli notify-test plot-idvg box-idvg plot-stress plot-gc-ret layout-localbg-v5 sample-devices dry-run reviewer-check build-gh pr pr-status
+.PHONY: help build up down verify clean test lint fmt smoke e2e logs shell lock up-live run-cli notify-test plot-idvg box-idvg plot-stress plot-gc-ret layout-localbg-v5 sample-devices dry-run reviewer-check build-gh pr pr-status ruleset-status
 
 help: ## list the targets
 	@awk 'BEGIN {FS = ":.*## "} /^##@/ {printf "\n%s\n", substr($$0, 5)} /^[a-z0-9-]+:.*## / {printf "  %-10s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -123,6 +123,11 @@ pr-status: ## the pull request of BRANCH: title, state, link and description
 	@test -n "$$GH_TOKEN" || { echo "refusing: GH_TOKEN is not set in .env (see .env.example)"; exit 2; }
 	$(GH) pr view "$(BRANCH)" --json number,title,state,isDraft,mergeable,reviewDecision,url --jq \
 	  '"#\(.number) \(.title)\nstate: \(.state)\(if .isDraft then " (draft)" else "" end), mergeable: \(.mergeable), review: \(if (.reviewDecision // "") == "" then "none yet" else .reviewDecision end)\n\(.url)"'
+
+ruleset-status: ## the rules GitHub enforces on main now (read-only; the ruleset is imported by hand, docs/0006)
+	@test -n "$$GH_TOKEN" || { echo "refusing: GH_TOKEN is not set in .env (see .env.example)"; exit 2; }
+	$(GH) api 'repos/{owner}/{repo}/rules/branches/main' --jq \
+	  'if length == 0 then "no rules on main: import .github/rulesets/protect-main.json (docs/0006)" else .[] | "\(.type)\t(\(.ruleset_source_type) ruleset \(.ruleset_id))" end'
 
 ##@ Lab PC only (native, in the qcodes env: the only way to reach GPIB)
 up-live: ## the app with LIVE runs allowed, on 127.0.0.1 (make up-live PY=".../envs/qcodes/python.exe")
