@@ -48,8 +48,9 @@ src/app/             the backend: api.py (routes only), pipeline.py, models.py, 
 src/web/             the page: index.html, app.js, styles.css
 src/measure/         the measurement package and its CLI (docs/0002-measure-in-src.md)
 tests/               pytest (test_pipeline, test_runs, test_api, test_measure_dryrun, test_plot_idvg,
-                     test_idvg_metrics_box, test_plot_stress_all, test_plot_gc_ret_all, test_sample_devices),
-                     smoke.py, e2e.mjs
+                     test_idvg_metrics_box, test_plot_stress_all, test_plot_gc_ret_all, test_sample_devices,
+                     test_main_ruleset), smoke.py, e2e.mjs
+.github/rulesets/    the ruleset for main, imported by hand on GitHub (docs/0006-main-ruleset.md)
 docs/                decisions worth remembering, one short file each, plus the capstone check-in (check-in.md)
 configs/             run configs (JSON), one per sample / die / experiment
 layouts/             device CSVs from the mask layouts, and the scripts that make them (gds env);
@@ -115,7 +116,9 @@ Makefile  README.md  ARCHITECTURE.md  AGENTS.md  CLAUDE.md  PROMPT.md (the speci
 - Only when publishing: `build-gh`, `pr` (opens a pull request from the current branch to `main`; it refuses
   `main`, an empty `TITLE`, a missing `BODY` file or a missing `GH_TOKEN`) and `pr-status`. The GitHub CLI runs
   in its own `gh` stage and service (pinned, checksum-verified, repository mounted read-only, token from `.env`).
-  There is no merge target (docs/0005-gh-in-container.md).
+  There is no merge target (docs/0005-gh-in-container.md). `ruleset-status` reads the rules GitHub enforces on
+  `main`. The ruleset itself, `.github/rulesets/protect-main.json`, is imported by hand, so the token never
+  needs admin rights (docs/0006-main-ruleset.md).
 
 Every container target runs through compose (`docker compose -f docker/compose.yaml`).
 

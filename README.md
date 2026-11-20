@@ -263,6 +263,20 @@ make pr TITLE="Short title" BODY=.ignore/pr.md
 `BODY` is a Markdown file inside the repository (`.ignore/` is gitignored). `make pr-status` shows the
 branch's pull request. Neither target merges; merging stays a reviewed step on GitHub (docs/0005).
 
+### Protecting `main`
+
+`.github/rulesets/protect-main.json` blocks direct pushes, force pushes and deletion on `main`, and lets only the
+repository admin merge, through a pull request. A fork that wants the same protection has to set it up by hand,
+once:
+
+1. Import the ruleset: Settings > Rules > Rulesets > New ruleset > Import a ruleset, then pick the file.
+2. Optionally, stop people outside the repository from opening pull requests: Settings > Moderation options >
+   Interaction limits > Limit to repository collaborators. This lasts at most six months, and it also blocks
+   their issues and comments.
+
+`make ruleset-status` lists the rules GitHub enforces on `main`; the token above is enough to run it. A ruleset
+cannot stop pull requests being opened, and it cannot tell you from your token (docs/0006).
+
 ## Layout and rules
 ARCHITECTURE.md (design, departures from the course layout), AGENTS.md (rules for anyone working here), docs/.
 
