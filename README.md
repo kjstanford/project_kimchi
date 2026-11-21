@@ -200,6 +200,8 @@ left out. It prints no measured values and no device statuses, so its output can
 ```bash
 make live-stats                 # data data_k4200 data_k4200_stress
 make live-stats DIRS="data"     # one folder
+make live-stats ARGS=--drift    # also one line per run on the chuck placement: moves, corrections, the drift the
+                                # move errors add up to without correction, and the drift the probes actually saw
 ```
 
 ## What its results are fit for

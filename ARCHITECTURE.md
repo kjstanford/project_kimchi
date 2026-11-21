@@ -16,7 +16,8 @@ are in `docs/`, one short file each; the departures from the course specificatio
   slide figures from saved data, into `.pptx_figs/` too. `measure.sample_devices` (`make sample-devices`)
   picks a balanced random subset of a multi-block device map for a shorter run. `measure.live_stats`
   (`make live-stats`) counts the live runs from their logs and summaries. It prints runs, active hours (the waits
-  at the confirmations left out), devices and emails, and no measured values.
+  at the confirmations left out), devices and emails, and no measured values. With `--drift` it also prints, per
+  run, the chuck drift the move errors would have added up to against the drift the correction held.
 - `src/app/` and `src/web/`: the web app. Check a config, preview its probe plan on the stage map, dry-run it on
   the fake instruments (or, on the lab PC only, run it live behind two typed confirmations), follow the run
   live, and browse saved data as interactive plots.

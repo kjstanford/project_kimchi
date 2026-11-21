@@ -94,8 +94,8 @@ plot-stress: ## every PMU stress run's dVt (stress + recovery) on one figure, e.
 plot-gc-ret: ## every 4200A gain-cell retention run (PMU + SMU) on one figure, e.g. ARGS="--out .pptx_figs/wd_bobafet"
 	$(RUN) python -B -m measure.plot_gc_ret_all $(ARGS)
 
-live-stats: ## live runs, active hours (waits at the confirmations left out), devices and emails; read-only, e.g. DIRS="data"
-	$(RUN) python -B -m measure.live_stats $(DIRS)
+live-stats: ## live runs, active hours (confirmation waits left out), devices, emails; ARGS=--drift adds chuck drift per run; read-only
+	$(RUN) python -B -m measure.live_stats $(DIRS) $(ARGS)
 
 sample-devices: ## a random device subset, every site in N blocks, e.g. ARGS="--config ... --per-site 3 --include TR-R01C14 --out configs/..._devices.csv"
 	$(RUN) python -B -m measure.sample_devices $(ARGS)

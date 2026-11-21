@@ -90,6 +90,40 @@ total                87     199.9     1.6       30.4     5857    7025  done 6 in
   any command they do not know, but their responses are modelled on the manuals. GPIB timing, real chuck drift and
   real contact are checked only by the live runs above.
 
+**Chuck move error, corrected on every move.** The S200's chuck is a mechanical stage, so even on a perfectly
+aligned wafer it lands slightly off where it was sent. Each error is small, but over hundreds of moves they add up
+until the probes miss the pads. Before this code, that was one of the main causes of probing failures on
+well-aligned chips. This is the owner's experience at the bench: no logged run predates the correction, so failures
+before and after are not counted.
+
+- **What the code does** (`src/measure/instruments/prober.py`):
+  - After every move it reads the chuck position back and logs two numbers: the move error, and the accumulated
+    drift from the intended path.
+  - Once an axis has drifted by `drift_correct_um` (2–5 µm in the configs), the correction is added to the next
+    move.
+  - With `drift_limit_um` set, a landing beyond that limit gets up to 3 extra correction moves at once.
+  - Beyond `max_drift_um` (20 µm), the run stops rather than land off the pads.
+- **What the logs show:** `make live-stats ARGS=--drift` on 20 November covers 7,070 moves in the 67 runs that
+  moved the chuck. "Uncorrected" is the largest running sum of a run's move errors, which is the drift it would
+  have had without correction. "Held" is the largest drift the probes actually saw. The first four lines and the
+  total:
+
+  ```text
+  run                                                             moves  corrections  fix moves  max move error um  uncorrected um  held um
+  data/wd_bobafet_6802/0_0/run_20261106_125112.log                  958           16          0               1.85           33.13     2.81
+  data/JK_annealed_350C/run_20261025_004435.log                     310           10          0               1.04           24.82     2.24
+  data/yanjie_in203_110cycleHfO2/0_0/run_20261118_001634.log        548            9          0               1.55           20.11     2.56
+  data/JK_annealed_300C/run_20261025_151240.log                     511           14          0               1.46           19.69     2.72
+  total (67 runs)                                                  7070           85          2               5.07           33.13    15.37
+  ```
+
+  - In the longest runs, the move errors add up to 20–33 µm. With the correction, those runs stayed within
+    2.2–2.8 µm of the intended path.
+  - The 15.37 µm in "held" comes from one of two early runs, on 3–4 October, that had no correction applied. They
+    drifted to 9.4 and 15.4 µm.
+- **Why it matters for layouts:** the pads need a margin for only a few µm of placement error, not tens of µm. A
+  layout can therefore use smaller pads and fit more devices.
+
 **The alert and end-of-run emails.** An unattended run that is not giving data still costs station time, and it
 keeps landing the probes on devices that have nothing to show.
 
