@@ -55,30 +55,37 @@ connected to any command. The logs are in `.ignore/evidence_*.log`, which is git
 ### Live runs: what a reviewer cannot rerun
 
 Without a probe station, a reviewer can only see dry runs on the fake instruments. A peer review on 20 November
-pointed out that the fakes are not checked against the real instruments. The dry runs are the part anyone can repeat. The
-same code has also driven the real station for seven weeks. A dry run and a live run call the same
+pointed out that the fakes are not checked against the real instruments. The dry runs are the part anyone can
+repeat. The same code has also driven the real station for seven weeks. A dry run and a live run call the same
 `measure.run_map.run`, and the differential tests above check that the two paths do not drift apart.
 
 From 3 October to 18 November 2026, the tool drove the S200 on the lab PC, unattended, for **87 live runs,
-202 hours of automated probing, and 5,857 devices** (7,025 device visits, counting resumes and remeasures):
+200 hours of automated probing, and 5,857 devices** (7,025 device visits, counting resumes and remeasures).
+`make live-stats` on 20 November:
 
-| Instruments | Experiment | Runs | Hours |
-|---|---|---|---|
-| S200 + B1500A | Id-Vg (`data/`) | 54 | 145.7 |
-| S200 + 4200A | Id-Vg (`data_k4200/`) | 25 | 42.5 |
-| S200 + 4200A (PMU) | bias stress (`data_k4200_stress/`) | 8 | 13.3 |
-| **Total** | | **87** | **201.5** |
+```text
+folder             runs  active h  idle h  longest h  devices  visits  emails
+data                 54     144.7     1.0       30.4     5732    6745  done 6 interrupted 4 alert 2
+data_k4200           25      41.9     0.6       12.6      109     259  -
+data_k4200_stress     8      13.3     0.1        5.6       16      21  -
+total                87     199.9     1.6       30.4     5857    7025  done 6 interrupted 4 alert 2
+```
 
+- **What the folders hold:**
+  - `data/` is the S200 with the B1500A, running Id-Vg.
+  - `data_k4200/` is the S200 with the 4200A, running Id-Vg.
+  - `data_k4200_stress/` is the S200 with the 4200A's PMU, running bias stress.
+- **How the hours are counted:** active hours run from each log's first line to its last, minus the time spent
+  waiting at the two typed confirmations, which add up to the 1.6 h in the "idle h" column. Only logs that say
+  `Mode: LIVE` count. The folders are gitignored, because the data is unpublished. The report holds counts and
+  times only, with no measured values and no device statuses.
 - **One night:** on 17–18 November, one run probed 535 devices in 7 h 54 min, from 00:16 to 08:10, with no one in
   the lab. For each device it moved the chuck, corrected for drift, landed the probes, ran the scan, screened the
   device, and lifted the probes again.
-- **The longest single run** lasted 30.4 hours.
+- **The longest single run** was 30.4 hours of active probing.
 - **By hand,** every device means aligning the probes under the microscope, landing them, starting the sweep and
-  lifting them. 202 hours of that is about five weeks of eight-hour days at the station, and much of it would
-  have been at night.
-- **The counts** are taken from the run logs (`run_*.log`, first to last timestamp) and summaries
-  (`summary_*.csv`) in the three folders, on 20 November. All 87 logs say `Mode: LIVE`. The folders are
-  gitignored, because the data is unpublished. The counts describe the runs; they contain no measured values.
+  lifting them. 200 hours of that is five weeks of eight-hour days at the station, and much of it would have been
+  at night.
 - **What the fakes do not prove:** no test replays a recorded live session against the fakes. The fakes refuse
   any command they do not know, but their responses are modelled on the manuals. GPIB timing, real chuck drift and
   real contact are checked only by the live runs above.

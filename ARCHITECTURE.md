@@ -14,7 +14,9 @@ are in `docs/`, one short file each; the departures from the course specificatio
   `measure.idvg_metrics_box` (`make box-idvg`, with the VTR extraction in `measure.tr_extraction`),
   `measure.plot_stress_all` (`make plot-stress`) and `measure.plot_gc_ret_all` (`make plot-gc-ret`) make the other
   slide figures from saved data, into `.pptx_figs/` too. `measure.sample_devices` (`make sample-devices`)
-  picks a balanced random subset of a multi-block device map for a shorter run.
+  picks a balanced random subset of a multi-block device map for a shorter run. `measure.live_stats`
+  (`make live-stats`) counts the live runs from their logs and summaries. It prints runs, active hours (the waits
+  at the confirmations left out), devices and emails, and no measured values.
 - `src/app/` and `src/web/`: the web app. Check a config, preview its probe plan on the stage map, dry-run it on
   the fake instruments (or, on the lab PC only, run it live behind two typed confirmations), follow the run
   live, and browse saved data as interactive plots.
@@ -49,7 +51,7 @@ src/web/             the page: index.html, app.js, styles.css
 src/measure/         the measurement package and its CLI (docs/0002-measure-in-src.md)
 tests/               pytest (test_pipeline, test_runs, test_api, test_measure_dryrun, test_plot_idvg,
                      test_idvg_metrics_box, test_plot_stress_all, test_plot_gc_ret_all, test_sample_devices,
-                     test_main_ruleset), smoke.py, e2e.mjs
+                     test_main_ruleset, test_live_stats), smoke.py, e2e.mjs
 .github/rulesets/    the ruleset for main, imported by hand on GitHub (docs/0006-main-ruleset.md)
 docs/                decisions worth remembering, one short file each, plus the capstone check-in (check-in.md)
 configs/             run configs (JSON), one per sample / die / experiment
