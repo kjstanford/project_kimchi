@@ -10,6 +10,7 @@ export COMPOSE_PROJECT_NAME HOST_UID HOST_GID
 COMPOSE := docker compose -f docker/compose.yaml
 RUN := $(COMPOSE) run --rm --no-deps app
 PORT ?= 8300
+DIRS ?= data data_k4200 data_k4200_stress
 # Lab PC only: the qcodes env's python, with its DLL dirs on PATH (see AGENTS.md)
 PY ?= python
 # Lab PC only: the gds env's python (KLayout), for the layout CSV scripts
@@ -20,7 +21,7 @@ BRANCH ?= $(shell git rev-parse --abbrev-ref HEAD)
 REVIEW_DIR := .ignore/reviewer_clone
 
 .DEFAULT_GOAL := help
-.PHONY: help build up down verify clean test lint fmt smoke e2e logs shell lock up-live run-cli notify-test plot-idvg box-idvg plot-stress plot-gc-ret layout-localbg-v5 sample-devices dry-run reviewer-check build-gh pr pr-status ruleset-status
+.PHONY: help build up down verify clean test lint fmt smoke e2e logs shell lock up-live run-cli notify-test plot-idvg box-idvg plot-stress plot-gc-ret layout-localbg-v5 sample-devices live-stats dry-run reviewer-check build-gh pr pr-status ruleset-status
 
 help: ## list the targets
 	@awk 'BEGIN {FS = ":.*## "} /^##@/ {printf "\n%s\n", substr($$0, 5)} /^[a-z0-9-]+:.*## / {printf "  %-10s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -92,6 +93,9 @@ plot-stress: ## every PMU stress run's dVt (stress + recovery) on one figure, e.
 
 plot-gc-ret: ## every 4200A gain-cell retention run (PMU + SMU) on one figure, e.g. ARGS="--out .pptx_figs/wd_bobafet"
 	$(RUN) python -B -m measure.plot_gc_ret_all $(ARGS)
+
+live-stats: ## live runs, active hours (waits at the confirmations left out), devices and emails; read-only, e.g. DIRS="data"
+	$(RUN) python -B -m measure.live_stats $(DIRS)
 
 sample-devices: ## a random device subset, every site in N blocks, e.g. ARGS="--config ... --per-site 3 --include TR-R01C14 --out configs/..._devices.csv"
 	$(RUN) python -B -m measure.sample_devices $(ARGS)

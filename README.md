@@ -186,6 +186,22 @@ make plot-stress ARGS="--out .pptx_figs/wd_bobafet"    # --sample wd_bobafet_691
 make plot-gc-ret ARGS="--out .pptx_figs/wd_bobafet"    # --sample wd_bobafet_6916 --die 0_0
 ```
 
+`make live-stats` reports how much unattended probing the live runs did, per data folder and in total. It shows:
+
+- runs, and active hours: each log's first line to its last, minus the waits at the two typed confirmations,
+  which are shown separately as "idle h";
+- the longest run;
+- distinct devices, and device visits;
+- the emails sent, by outcome.
+
+It reads `run_*.log` and `summary_*.csv` and writes nothing. Dry runs and logs that don't say `Mode: LIVE` are
+left out. It prints no measured values and no device statuses, so its output can be quoted.
+
+```bash
+make live-stats                 # data data_k4200 data_k4200_stress
+make live-stats DIRS="data"     # one folder
+```
+
 ## What its results are fit for
 
 The app computes nothing new about the devices: Vt, on/off and the screening flags are those of
