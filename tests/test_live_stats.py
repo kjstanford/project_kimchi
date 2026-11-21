@@ -95,3 +95,38 @@ def test_main_prints_a_total_and_no_status(tree: Path, tmp_path: Path, capsys):
 def test_main_refuses_a_missing_folder(tmp_path: Path, capsys):
     assert live_stats.main([str(tmp_path / "nope")]) == 2
     assert "not a folder" in capsys.readouterr().err
+
+
+# Three moves that each land +1 um off in x. The drift reaches +2 um, a correction is added to the next move,
+# and the held drift falls back to +0.5 um. Without the correction, the errors would add up to 3 um.
+DRIFT_LOG = """\
+[09:00:00] Mode: LIVE | SMU tool b1500 | experiment idvg | origin A:1
+[09:00:00] Planned devices: 4
+[09:00:01] Move dx=100.000 dy=0.000 um (chuck start 0.000, 0.000)
+[09:00:02] Chuck now at -99.000, 0.000 | move error (+1.000, +0.000) um | accumulated drift (+1.000, +0.000) um
+[09:00:03] Move dx=100.000 dy=0.000 um (chuck start -99.000, 0.000)
+[09:00:04] Chuck now at -198.000, 0.000 | move error (+1.000, +0.000) um | accumulated drift (+2.000, +0.000) um
+[09:00:05] Move dx=100.000 dy=0.000 um (chuck start -198.000, 0.000)
+[09:00:05] Drift correction: chuck command adjusted by (-2.000, +0.000) um (accumulated drift reached +/-2 um)
+[09:00:06] Chuck now at -299.500, 0.000 | move error (+1.000, -0.000) um | accumulated drift (+0.500, +0.000) um
+[09:00:07] Drift beyond +/-0.2 um: correction move (-0.500, +0.000) um
+"""
+
+
+def test_drift_compares_the_summed_move_errors_with_the_held_drift():
+    d = live_stats.run_drift("x.log", live_stats._timed_lines(DRIFT_LOG))
+    assert (d.moves, d.corrections, d.fix_moves) == (3, 1, 1)
+    assert d.max_move_error == pytest.approx(1.0)
+    assert d.uncorrected == pytest.approx(3.0)
+    assert d.held == pytest.approx(2.0)
+
+
+def test_main_drift_lists_only_runs_that_moved(tree: Path, capsys):
+    _write(tree / "s" / "0_0" / "run_20261104_090000.log", DRIFT_LOG)
+    assert live_stats.main([str(tree), "--drift"]) == 0
+    lines = capsys.readouterr().out.strip().splitlines()
+    drift_head = next(i for i, line in enumerate(lines) if line.startswith("run "))
+    runs = lines[drift_head + 1 : -1]
+    assert len(runs) == 1 and runs[0].split()[0].endswith("run_20261104_090000.log")
+    assert lines[-1].split()[:3] == ["total", "(1", "runs)"]
+    assert lines[-1].split()[-2:] == ["3.00", "2.00"]

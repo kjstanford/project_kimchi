@@ -103,12 +103,24 @@ before and after are not counted.
     move.
   - With `drift_limit_um` set, a landing beyond that limit gets up to 3 extra correction moves at once.
   - Beyond `max_drift_um` (20 µm), the run stops rather than land off the pads.
-- **What the logs show** (the same 87 logs, 7,070 moves in the 67 runs that moved): adding up a run's move errors
-  gives the drift it would have had without correction.
-  - In the longest runs, that sum reaches 20–33 µm. The run of 958 moves on 6 November reached 33.1 µm, and the
-    535-device run 20.1 µm.
-  - With the correction, those runs stayed within 2.2–2.8 µm of the intended path.
-  - Two early runs, on 3–4 October, had no correction applied, and drifted to 9.4 and 15.4 µm.
+- **What the logs show:** `make live-stats ARGS=--drift` on 20 November covers 7,070 moves in the 67 runs that
+  moved the chuck. "Uncorrected" is the largest running sum of a run's move errors, which is the drift it would
+  have had without correction. "Held" is the largest drift the probes actually saw. The first four lines and the
+  total:
+
+  ```text
+  run                                                             moves  corrections  fix moves  max move error um  uncorrected um  held um
+  data/wd_bobafet_6802/0_0/run_20261106_125112.log                  958           16          0               1.85           33.13     2.81
+  data/JK_annealed_350C/run_20261025_004435.log                     310           10          0               1.04           24.82     2.24
+  data/yanjie_in203_110cycleHfO2/0_0/run_20261118_001634.log        548            9          0               1.55           20.11     2.56
+  data/JK_annealed_300C/run_20261025_151240.log                     511           14          0               1.46           19.69     2.72
+  total (67 runs)                                                  7070           85          2               5.07           33.13    15.37
+  ```
+
+  - In the longest runs, the move errors add up to 20–33 µm. With the correction, those runs stayed within
+    2.2–2.8 µm of the intended path.
+  - The 15.37 µm in "held" comes from one of two early runs, on 3–4 October, that had no correction applied. They
+    drifted to 9.4 and 15.4 µm.
 - **Why it matters for layouts:** the pads need a margin for only a few µm of placement error, not tens of µm. A
   layout can therefore use smaller pads and fit more devices.
 

@@ -12,10 +12,18 @@ logs whose first line does not say `Mode: LIVE` are not counted.
 - Devices: distinct (summary folder, device key) pairs. Device visits: summary rows (resumes and remeasures count
   again).
 - Emails: the `Email sent:` lines, by outcome, and the alerts after N failures in a row.
-Only counts and times are printed, never a measured value or a device status. Nothing is written.
+- With --drift, one line per run that moved the chuck (measure.instruments.prober), showing the S200 chuck's
+  placement, not the devices:
+  - moves, and the drift corrections and extra fix moves the run made;
+  - the largest single move error;
+  - "uncorrected": the largest |running sum of the move errors|, which is the drift the run would have had
+    without correction;
+  - "held": the largest logged accumulated drift, which is what the probes actually saw.
+Only counts, times and chuck positions are printed, never a device's measured value or status. Nothing is written.
 """
 import argparse
 import csv
+import math
 import re
 import sys
 from collections import Counter
@@ -29,6 +37,21 @@ OUTCOMES = ('DONE', 'INTERRUPTED', 'STOPPED', 'ERROR', 'AUTO-STOPPED')
 EMAIL_END_RE = re.compile(r'^Email sent: \[probe\] .*: (' + '|'.join(OUTCOMES) + r'), \d+/\d+ devices')
 EMAIL_ALERT_RE = re.compile(r'^Email sent: \[probe\] .*: \d+ failures in a row')
 HEADER_PREFIXES = ('Mode:', 'Planned devices:', 'Resume:')
+_NUM = r'([-+]?\d+(?:\.\d+)?)'
+MOVE_ERROR_RE = re.compile(rf'move error \({_NUM}, {_NUM}\) um')
+DRIFT_RE = re.compile(rf'accumulated drift \({_NUM}, {_NUM}\) um')
+
+
+@dataclass
+class RunDrift:
+    """The chuck placement of one live run, in um (module docstring, --drift)."""
+    log: str
+    moves: int = 0
+    corrections: int = 0
+    fix_moves: int = 0
+    max_move_error: float = 0.0
+    uncorrected: float = 0.0
+    held: float = 0.0
 
 
 @dataclass
@@ -50,10 +73,12 @@ class FolderStats:
     devices: set[tuple[str, str]] = field(default_factory=set)
     visits: int = 0
     emails: Counter = field(default_factory=Counter)
+    drifts: list[RunDrift] = field(default_factory=list)
 
     def add(self, other: 'FolderStats') -> None:
         """Fold another folder's totals into this one."""
         self.runs += other.runs
+        self.drifts += other.drifts
         self.devices |= other.devices
         self.visits += other.visits
         self.emails += other.emails
@@ -94,6 +119,26 @@ def run_times(lines: list[tuple[float, str]]) -> RunTimes:
     return RunTimes(float(span), float(idle))
 
 
+def run_drift(log: str, lines: list[tuple[float, str]]) -> RunDrift:
+    """The chuck placement of one log: moves, corrections, and the uncorrected against the held drift."""
+    d = RunDrift(log)
+    sx = sy = 0.0
+    for _, msg in lines:
+        if msg.startswith('Drift correction:'):
+            d.corrections += 1
+        elif msg.startswith('Drift beyond'):
+            d.fix_moves += 1
+        if m := MOVE_ERROR_RE.search(msg):
+            ex, ey = float(m[1]), float(m[2])
+            d.moves += 1
+            sx, sy = sx + ex, sy + ey
+            d.max_move_error = max(d.max_move_error, math.hypot(ex, ey))
+            d.uncorrected = max(d.uncorrected, math.hypot(sx, sy))
+        if m := DRIFT_RE.search(msg):
+            d.held = max(d.held, math.hypot(float(m[1]), float(m[2])))
+    return d
+
+
 def folder_stats(root: Path) -> FolderStats:
     """Walk one folder; raises FileNotFoundError when it does not exist."""
     if not root.is_dir():
@@ -105,6 +150,9 @@ def folder_stats(root: Path) -> FolderStats:
         if not lines or not lines[0][1].startswith('Mode: LIVE'):
             continue
         stats.runs.append(run_times(lines))
+        drift = run_drift(log.as_posix(), lines)
+        if drift.moves:
+            stats.drifts.append(drift)
         for _, msg in lines:
             if m := EMAIL_END_RE.match(msg):
                 stats.emails[m[1]] += 1
@@ -123,6 +171,13 @@ def _h(seconds: float) -> str:
     return f'{seconds / 3600:.1f}'
 
 
+def _format(head: tuple[str, ...], body: list[tuple[str, ...]], left: tuple[int, ...]) -> str:
+    """Columns padded to their widest cell; the columns in `left` are left-aligned, the rest right-aligned."""
+    widths = [max(len(r[i]) for r in (head, *body)) for i in range(len(head))]
+    fmt = lambda r: '  '.join(c.ljust(w) if i in left else c.rjust(w) for i, (c, w) in enumerate(zip(r, widths)))
+    return '\n'.join(fmt(r).rstrip() for r in (head, *body))
+
+
 def table(rows: list[FolderStats]) -> str:
     """The report: one line per folder and a total line."""
     head = ('folder', 'runs', 'active h', 'idle h', 'longest h', 'devices', 'visits', 'emails')
@@ -132,15 +187,27 @@ def table(rows: list[FolderStats]) -> str:
         body.append((s.name, str(len(s.runs)), _h(sum(r.active_s for r in s.runs)),
                      _h(sum(r.idle_s for r in s.runs)), _h(max((r.active_s for r in s.runs), default=0)),
                      str(len(s.devices)), str(s.visits), emails))
-    widths = [max(len(r[i]) for r in (head, *body)) for i in range(len(head))]
-    fmt = lambda r: '  '.join(c.ljust(w) if i in (0, 7) else c.rjust(w) for i, (c, w) in enumerate(zip(r, widths)))
-    return '\n'.join([fmt(head), *(fmt(r) for r in body)])
+    return _format(head, body, left=(0, 7))
+
+
+def drift_table(drifts: list[RunDrift]) -> str:
+    """One line per run that moved, the largest uncorrected drift first, and a total line."""
+    head = ('run', 'moves', 'corrections', 'fix moves', 'max move error um', 'uncorrected um', 'held um')
+    rows = sorted(drifts, key=lambda d: d.uncorrected, reverse=True)
+    body = [(d.log, str(d.moves), str(d.corrections), str(d.fix_moves), f'{d.max_move_error:.2f}',
+             f'{d.uncorrected:.2f}', f'{d.held:.2f}') for d in rows]
+    body.append((f'total ({len(rows)} runs)', str(sum(d.moves for d in rows)),
+                 str(sum(d.corrections for d in rows)), str(sum(d.fix_moves for d in rows)),
+                 f'{max((d.max_move_error for d in rows), default=0):.2f}',
+                 f'{max((d.uncorrected for d in rows), default=0):.2f}', f'{max((d.held for d in rows), default=0):.2f}'))
+    return _format(head, body, left=(0,))
 
 
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point; prints the report and returns the exit code."""
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('folders', nargs='+', type=Path, help='data folders to walk (read only)')
+    ap.add_argument('--drift', action='store_true', help='also one line per run on the chuck placement')
     args = ap.parse_args(argv)
     try:
         per = [folder_stats(f) for f in args.folders]
@@ -151,6 +218,9 @@ def main(argv: list[str] | None = None) -> int:
     for s in per:
         total.add(s)
     print(table(per + [total] if len(per) > 1 else per))
+    if args.drift:
+        print()
+        print(drift_table(total.drifts))
     return 0
 
 
